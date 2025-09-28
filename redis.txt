@@ -1,0 +1,10 @@
+import { createClient } from "redis"
+import { NextResponse } from "next/server"
+
+const redis =  await createClient({ url: process.env.REDIS_URL }).connect();
+
+export async function GET() {
+  const value = await redis.get("myKey")
+
+  return NextResponse.json({ value })
+}
