@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_MODEL, MODEL_LABELS, SUPPORTED_MODELS, type SupportedModel } from "@/config/models";
 import { estimateTranslationTokenUsage, fallbackCharacterEstimate } from "@/lib/tokenEstimator";
 
-const QUOTA_POLL_INTERVAL = 5_000;
+const QUOTA_POLL_INTERVAL = 15_000;
 
 type QuotaInfo = {
   used: number;
@@ -615,7 +615,7 @@ export default function Home() {
               value={sourceText}
               onChange={(event) => setSourceText(event.target.value)}
               placeholder="输入要翻译的文本..."
-              className="h-60 w-full flex-1 resize-none rounded-lg border border-gray-300 p-4 text-sm shadow-sm transition focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 sm:h-full"
+              className="min-h-[45vh] w-full flex-1 resize-none rounded-lg border border-gray-300 p-4 text-sm shadow-sm transition focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 sm:h-full sm:min-h-0"
             />
           </div>
           <div className="hidden w-px bg-gray-200 sm:block" />
@@ -635,7 +635,7 @@ export default function Home() {
               value={targetText}
               readOnly
               placeholder="翻译结果将显示在这里..."
-              className="h-60 w-full flex-1 resize-none rounded-lg border border-gray-300 bg-gray-100 p-4 text-sm shadow-sm focus:outline-none sm:h-full"
+              className="min-h-[40vh] w-full flex-1 resize-none rounded-lg border border-gray-300 bg-gray-100 p-4 text-sm shadow-sm focus:outline-none sm:h-full sm:min-h-0"
             />
             {copyStatus === "success" && (
               <p className="mt-1 text-xs text-green-600">翻译结果已复制到剪贴板</p>
