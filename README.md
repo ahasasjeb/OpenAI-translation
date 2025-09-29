@@ -1,4 +1,3 @@
-````markdown
 # OpenAI 翻译调试面板
 
 基于 Next.js App Router 的翻译调试工具，默认仅调用每日 2.5M token 免费额度的模型。后端接口部署在 Vercel，额度统计优先写入 Redis，并在每日 UTC 0 点自动重置；缺少 Redis 时自动退化为进程内存，方便开源使用和本地调试。
@@ -52,4 +51,4 @@
 - 新增模型时更新 `src/config/models.ts`。
 - 调整额度策略可修改 `src/lib/quotaStore.ts`。
 - 如需自定义提示语或前端行为，请在 `src/app/page.tsx` 中调整。
-````
+
