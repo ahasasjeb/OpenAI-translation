@@ -608,15 +608,25 @@ export default function Home() {
 
         <section className="flex flex-col gap-4 sm:h-[600px] sm:flex-row">
           <div className="flex flex-col sm:flex-1">
-            <div className="mb-2">
+            <div className="mb-2 flex items-center justify-between">
               <span className="text-sm font-medium text-gray-700">原文</span>
             </div>
-            <textarea
-              value={sourceText}
-              onChange={(event) => setSourceText(event.target.value)}
-              placeholder="输入要翻译的文本..."
-              className="min-h-[45vh] w-full flex-1 resize-none rounded-lg border border-gray-300 p-4 text-sm shadow-sm transition focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 sm:h-full sm:min-h-0"
-            />
+            <div className="relative flex-1">
+              <textarea
+                value={sourceText}
+                onChange={(event) => setSourceText(event.target.value)}
+                placeholder="输入要翻译的文本..."
+                className="min-h-[45vh] w-full flex-1 resize-none rounded-lg border border-gray-300 p-4 pr-32 text-sm shadow-sm transition focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 sm:h-full sm:min-h-0"
+              />
+              <button
+                type="button"
+                onClick={handleTranslate}
+                disabled={translateDisabled}
+                className={`absolute right-4 top-4 rounded-md px-3 py-1.5 text-sm font-medium text-white shadow transition ${translateDisabled ? "cursor-not-allowed bg-blue-300" : "bg-blue-500 hover:bg-blue-600"}`}
+              >
+                {translateButtonLabel}
+              </button>
+            </div>
           </div>
           <div className="hidden w-px bg-gray-200 sm:block" />
           <div className="flex flex-col sm:flex-1">
@@ -646,14 +656,7 @@ export default function Home() {
           </div>
         </section>
 
-        <section className="flex items-center justify-center gap-4">
-          <button
-            onClick={handleTranslate}
-            disabled={translateDisabled}
-            className={`rounded-lg px-6 py-2 font-medium text-white transition ${translateDisabled ? "cursor-not-allowed bg-blue-300" : "bg-blue-500 hover:bg-blue-600"}`}
-          >
-            {translateButtonLabel}
-          </button>
+        <section className="flex items-center justify-end gap-4">
           <button
             onClick={handleClear}
             disabled={isLoading}
