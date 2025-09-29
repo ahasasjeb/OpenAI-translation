@@ -33,6 +33,7 @@
 - `POST /api/translate`
   - 请求体：`{ text, sourceLang?, targetLang?, model? }`
   - 仅允许 `src/config/models.ts` 中列出的免费模型。
+   - 响应：以 NDJSON 流式返回翻译片段（`type="delta"`）与最终元数据（`type="final"`），出现错误时会推送 `type="error"`。
   - 额度用尽返回 `429`，响应包含最新 `quota`；Redis 不可用时返回 `503 redis_unavailable`。
 
 - `GET /api/quota`

@@ -16,23 +16,34 @@ type QuotaInfo = {
   resetAtBeijing?: string;
 };
 
-type TranslateSuccess = {
-  data: {
-    translation: string;
-    quota: QuotaInfo;
+type ApiError = {
+  error?: string;
+  message?: string;
+  quota?: QuotaInfo;
+};
+
+type StreamDeltaEvent = {
+  type: "delta";
+  delta?: string;
+};
+
+type StreamFinalEvent = {
+  type: "final";
+  data?: {
+    translation?: string;
+    quota?: QuotaInfo;
     usage?: {
       tokens?: number;
       limit?: number;
     };
-    model: SupportedModel;
-    sourceLang: string;
-    targetLang: string;
+    quotaExceeded?: boolean;
   };
 };
 
-type ApiError = {
-  error?: string;
+type StreamErrorEvent = {
+  type: "error";
   message?: string;
+  code?: string;
   quota?: QuotaInfo;
 };
 
@@ -234,6 +245,7 @@ export default function Home() {
     setIsLoading(true);
     setError(null);
     setLastUsageTokens(null);
+    setTargetText("");
     if (copyResetTimerRef.current !== null) {
       window.clearTimeout(copyResetTimerRef.current);
       copyResetTimerRef.current = null;
@@ -252,37 +264,143 @@ export default function Home() {
         }),
       });
 
-      const json = (await response.json()) as TranslateSuccess | ApiError;
       if (!response.ok) {
-        const errorPayload = json as ApiError;
-        const message = errorPayload.message ?? "翻译失败，请稍后再试";
+        let errorPayload: ApiError | null = null;
+        try {
+          errorPayload = (await response.json()) as ApiError;
+        } catch (err) {
+          console.error("Failed to parse error response", err);
+        }
+        const message = errorPayload?.message ?? `翻译失败 (${response.status})`;
         setError(message);
-        if ("error" in errorPayload && errorPayload.error === "quota_disabled") {
+        if (errorPayload?.error === "quota_disabled") {
           setRedisReady(false);
         }
-        if (errorPayload.quota) {
+        if (errorPayload?.quota) {
           setQuota(errorPayload.quota);
         }
         return;
       }
 
-      if (!("data" in json)) {
-        setError("服务响应格式异常");
+      if (!response.body) {
+        setError("服务响应为空");
         return;
       }
 
-      setTargetText(json.data.translation);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let aggregated = "";
+      let streamError: string | null = null;
+      let shouldStop = false;
+
+      const processLine = (line: string) => {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          return;
+        }
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(trimmed) as unknown;
+        } catch (err) {
+          console.error("Failed to parse stream chunk", err, trimmed);
+          return;
+        }
+        if (!parsed || typeof parsed !== "object" || !("type" in parsed)) {
+          return;
+        }
+        const event = parsed as StreamDeltaEvent | StreamFinalEvent | StreamErrorEvent;
+
+        switch (event.type) {
+          case "delta": {
+            const delta = typeof event.delta === "string" ? event.delta : "";
+            if (!delta) {
+              return;
+            }
+            aggregated += delta;
+            setTargetText(aggregated);
+            break;
+          }
+          case "final": {
+            const data = event.data ?? {};
+            const finalTranslation = typeof data.translation === "string"
+              ? data.translation
+              : aggregated;
+            aggregated = finalTranslation;
+            setTargetText(finalTranslation);
+            if (data.quota) {
+              setQuota(data.quota as QuotaInfo);
+            }
+            setRedisReady(true);
+            const tokenCost = data.usage?.tokens;
+            setLastUsageTokens(typeof tokenCost === "number" ? tokenCost : null);
+            if (data.quotaExceeded) {
+              streamError = "今日额度已用完，请等待下一次北京时间 8 点再来。";
+            }
+            shouldStop = true;
+            break;
+          }
+          case "error": {
+            const message = typeof event.message === "string"
+              ? event.message
+              : "翻译失败，请稍后再试";
+            streamError = message;
+            if (event.code === "quota_disabled") {
+              setRedisReady(false);
+            }
+            if (event.quota) {
+              setQuota(event.quota as QuotaInfo);
+            }
+            shouldStop = true;
+            break;
+          }
+          default:
+            break;
+        }
+      };
+
+      while (!shouldStop) {
+        const { value, done } = await reader.read();
+        if (done) {
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        let newlineIndex = buffer.indexOf("\n");
+        while (newlineIndex !== -1) {
+          const line = buffer.slice(0, newlineIndex);
+          buffer = buffer.slice(newlineIndex + 1);
+          processLine(line);
+          if (shouldStop) {
+            break;
+          }
+          newlineIndex = buffer.indexOf("\n");
+        }
+      }
+
+      if (!shouldStop && buffer.trim()) {
+        processLine(buffer.trim());
+      }
+
+      if (shouldStop) {
+        try {
+          await reader.cancel();
+        } catch {
+          // ignore
+        }
+      }
+
+      if (!aggregated && !streamError) {
+        streamError = "未能获取翻译结果，请稍后重试";
+      }
+
       if (copyResetTimerRef.current !== null) {
         window.clearTimeout(copyResetTimerRef.current);
         copyResetTimerRef.current = null;
       }
       setCopyStatus("idle");
-      if (json.data.quota) {
-        setQuota(json.data.quota);
+      if (streamError) {
+        setError(streamError);
       }
-      setRedisReady(true);
-      const tokenCost = json.data.usage?.tokens;
-      setLastUsageTokens(typeof tokenCost === "number" ? tokenCost : null);
     } catch (err) {
       console.error("Translate request failed", err);
       setError(err instanceof Error ? err.message : "网络错误，请稍后再试");

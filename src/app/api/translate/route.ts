@@ -93,13 +93,12 @@ export async function POST(request: Request) {
 
 	const sourceLang = payload.sourceLang || "auto";
 	const targetLang = payload.targetLang || "zh";
+	const prompt = buildTranslationPrompt(text, sourceLang, targetLang);
 
-	let translation = "";
-	let tokensUsed = 0;
-
+	let responseStream: Awaited<ReturnType<ReturnType<typeof getOpenAIClient>["responses"]["stream"]>>;
 	try {
 		const openai = getOpenAIClient();
-		const response = await openai.responses.create({
+		responseStream = await openai.responses.stream({
 			model: requestedModel,
 			input: [
 				{
@@ -108,13 +107,10 @@ export async function POST(request: Request) {
 				},
 				{
 					role: "user",
-					content: buildTranslationPrompt(text, sourceLang, targetLang),
+					content: prompt,
 				},
 			],
 		});
-
-		translation = (response.output_text ?? "").trim();
-		tokensUsed = normaliseUsage(response.usage, text, translation);
 	} catch (error) {
 		if (error instanceof APIError) {
 			console.error("OpenAI API error", error.status, error.error);
@@ -139,53 +135,136 @@ export async function POST(request: Request) {
 		}, { status: 502 });
 	}
 
-	if (!translation) {
-		return NextResponse.json({
-			error: "empty_translation",
-			message: "未能获取翻译结果，请稍后重试",
-		}, { status: 502 });
-	}
+	const encoder = new TextEncoder();
+	const encode = (chunk: unknown) => encoder.encode(`${JSON.stringify(chunk)}\n`);
 
-	try {
-		const quota = await incrementQuota({
-			tokens: tokensUsed,
-			model: requestedModel,
-			timestamp: new Date(),
-		});
+	const readable = new ReadableStream<Uint8Array>({
+		async start(controller) {
+			let aggregated = "";
+			const abortStream = (reason?: string) => {
+				try {
+					responseStream.controller.abort(reason);
+				} catch {
+					// ignore
+				}
+			};
 
-		if (quota.remaining <= 0) {
-			return quotaExceededResponse(quota);
-		}
+			try {
+				for await (const event of responseStream) {
+					switch (event.type) {
+						case "response.output_text.delta": {
+							const delta = event.delta ?? "";
+							if (delta) {
+								aggregated += delta;
+								controller.enqueue(encode({ type: "delta", delta }));
+							}
+							break;
+						}
+						case "response.output_text.done": {
+							break;
+						}
+						case "error": {
+							const errorEvent = event as { error?: { message?: string }; message?: string };
+							const message = errorEvent.error?.message ?? errorEvent.message ?? "调用 OpenAI API 失败";
+							controller.enqueue(encode({ type: "error", code: "openai_error", message }));
+							abortStream(message);
+							controller.close();
+							return;
+						}
+						default: {
+							break;
+						}
+					}
+				}
 
-		return NextResponse.json({
-			data: {
-				translation,
-				quota: augmentQuota(quota),
-				usage: {
-					tokens: tokensUsed,
-					limit: DAILY_TOKEN_LIMIT,
-				},
-				model: requestedModel,
-				sourceLang,
-				targetLang,
-			},
-		});
-	} catch (error) {
-		if (error instanceof QuotaDisabledError) {
-			console.error("Quota disabled when recording quota", error);
-			return quotaDisabledResponse(error.message);
-		}
+				const finalResponse = await responseStream.finalResponse();
+				const output = (aggregated || finalResponse.output_text || "").trim();
+				if (!output) {
+					controller.enqueue(encode({
+						type: "error",
+						code: "empty_translation",
+						message: "未能获取翻译结果，请稍后重试",
+					}));
+					controller.close();
+					return;
+				}
 
-		if (error instanceof DailyQuotaExceededError) {
-			return await quotaExceededJson();
-		}
+				const tokensUsed = normaliseUsage(finalResponse.usage, text, output);
+				try {
+					const quota = await incrementQuota({
+						tokens: tokensUsed,
+						model: requestedModel,
+						timestamp: new Date(),
+					});
 
-		console.error("Failed to record quota", error);
-		return NextResponse.json({
-			error: "quota_persist_failed",
-			message: "额度统计失败，请稍后再试",
-		}, { status: 500 });
-	}
+					controller.enqueue(encode({
+						type: "final",
+						data: {
+							translation: output,
+							quota: augmentQuota(quota),
+							usage: {
+								tokens: tokensUsed,
+								limit: DAILY_TOKEN_LIMIT,
+							},
+							model: requestedModel,
+							sourceLang,
+							targetLang,
+							quotaExceeded: quota.remaining <= 0,
+						},
+					}));
+					controller.close();
+					return;
+				} catch (error) {
+					if (error instanceof QuotaDisabledError) {
+						console.error("Quota disabled when recording quota", error);
+						controller.enqueue(encode({
+							type: "error",
+							code: "quota_disabled",
+							message: error.message,
+						}));
+						controller.close();
+						return;
+					}
+
+					if (error instanceof DailyQuotaExceededError) {
+						const quota = await getQuotaStatus();
+						controller.enqueue(encode({
+							type: "error",
+							code: "quota_exceeded",
+							message: "请等待下一次北京时间8点再来",
+							quota: quota ? augmentQuota(quota) : null,
+						}));
+						controller.close();
+						return;
+					}
+
+					console.error("Failed to record quota", error);
+					controller.enqueue(encode({
+						type: "error",
+						code: "quota_persist_failed",
+						message: "额度统计失败，请稍后再试",
+					}));
+					controller.close();
+				}
+			} catch (error) {
+				console.error("Unexpected streaming error", error);
+				const message = error instanceof Error ? error.message : "翻译失败，请稍后再试";
+				controller.enqueue(encode({
+					type: "error",
+					code: "translation_failed",
+					message,
+				}));
+				controller.close();
+			}
+		},
+	});
+
+	return new Response(readable, {
+		headers: {
+			"Content-Type": "application/x-ndjson; charset=utf-8",
+			"Cache-Control": "no-cache, no-transform",
+		},
+	});
 }
 
 function normaliseUsage(
