@@ -228,8 +228,8 @@ export default function Home() {
   const estimatedTokensDisplay = estimatedTokens != null ? estimatedTokens.toLocaleString("en-US") : "--";
   const estimatedRemainingDisplay = estimatedRemaining != null ? Math.max(0, estimatedRemaining).toLocaleString("en-US") : null;
   const estimateBannerClass = estimatedOverLimit
-    ? "border-red-200 bg-red-50 text-red-700"
-    : "border-blue-100 bg-blue-50 text-blue-700";
+    ? "border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300"
+    : "border-blue-100 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300";
   const estimateMessage = isEstimatingTokens
     ? "正在估算本次请求的 Token 消耗…"
     : `预计本次请求将消耗 ${estimatedTokensDisplay} tokens${estimatedRemainingDisplay != null ? `，剩余 ${estimatedRemainingDisplay}` : ""}`;
@@ -501,46 +501,46 @@ export default function Home() {
   }, [targetText]);
 
   return (
-    <div className="min-h-screen bg-gray-50 p-4">
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-4">
       <div className="mx-auto max-w-6xl space-y-6">
         <header className="space-y-3">
-          <h1 className="text-2xl font-semibold text-gray-900">OpenAI 翻译调试面板</h1>
-          <p className="text-sm text-gray-600">
+          <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">OpenAI 翻译调试面板</h1>
+          <p className="text-sm text-gray-600 dark:text-gray-400">
             仅支持每日 2.5M token 免费额度的模型，额度在每日 UTC 0 点（北京时间 8 点）自动重置。
           </p>
-          <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+          <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 shadow-sm">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
               <div>
-                <p className="text-sm font-medium text-gray-700">今日已用 Tokens</p>
-                <p className="text-2xl font-semibold text-gray-900">{quotaUsedLabel}</p>
+                <p className="text-sm font-medium text-gray-700 dark:text-gray-300">今日已用 Tokens</p>
+                <p className="text-2xl font-semibold text-gray-900 dark:text-gray-100">{quotaUsedLabel}</p>
               </div>
               <div>
-                <p className="text-sm font-medium text-gray-700">剩余额度</p>
-                <p className="text-lg text-gray-900">{quotaRemainingLabel} / {quotaLimitLabel}</p>
+                <p className="text-sm font-medium text-gray-700 dark:text-gray-300">剩余额度</p>
+                <p className="text-lg text-gray-900 dark:text-gray-100">{quotaRemainingLabel} / {quotaLimitLabel}</p>
               </div>
               <div>
-                <p className="text-sm font-medium text-gray-700">下次重置（北京时间）</p>
-                <p className="text-lg text-gray-900">{resetLabel}</p>
+                <p className="text-sm font-medium text-gray-700 dark:text-gray-300">下次重置（北京时间）</p>
+                <p className="text-lg text-gray-900 dark:text-gray-100">{resetLabel}</p>
               </div>
             </div>
-            <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-gray-200">
+            <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
               <div
-                className={`h-full rounded-full ${quotaExceeded ? "bg-red-500" : "bg-blue-500"}`}
+                className={`h-full rounded-full ${quotaExceeded ? "bg-red-500 dark:bg-red-400" : "bg-blue-500 dark:bg-blue-400"}`}
                 style={{ width: `${quotaPercent}%` }}
               />
             </div>
           </div>
-          {quotaError && <p className="text-sm text-red-600">{quotaError}</p>}
+          {quotaError && <p className="text-sm text-red-600 dark:text-red-400">{quotaError}</p>}
           {!redisReady && !quotaError && (
-            <p className="text-sm text-red-600">Redis 未就绪，无法记录额度。</p>
+            <p className="text-sm text-red-600 dark:text-red-400">Redis 未就绪，无法记录额度。</p>
           )}
           {error && (
-            <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">
+            <div className="rounded-md border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 p-3 text-sm text-red-700 dark:text-red-300" role="alert">
               {error}
             </div>
           )}
           {quotaExceeded && !error && (
-            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700" role="status">
+            <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-3 text-sm text-amber-700 dark:text-amber-300" role="status">
               请等待下一次北京时间 8 点再来。
             </div>
           )}
@@ -548,12 +548,12 @@ export default function Home() {
 
         <section className="flex flex-col gap-4 sm:flex-row sm:items-center">
           <div className="flex items-center gap-2">
-            <label className="text-sm font-medium text-gray-700">模型</label>
+            <label className="text-sm font-medium text-gray-700 dark:text-gray-300">模型</label>
             <select
               value={model}
               onChange={(event) => setModel(event.target.value as SupportedModel)}
               disabled={isLoading}
-              className="rounded-md border border-gray-300 px-3 py-1 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1 text-sm shadow-sm focus:border-blue-500 dark:focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:focus:ring-blue-400 text-gray-900 dark:text-gray-100"
             >
               {SUPPORTED_MODELS.map((option) => (
                 <option key={option} value={option}>
@@ -567,7 +567,7 @@ export default function Home() {
               value={sourceLang}
               onChange={(event) => setSourceLang(event.target.value)}
               disabled={isLoading}
-              className="rounded-md border border-gray-300 px-3 py-1 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1 text-sm shadow-sm focus:border-blue-500 dark:focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:focus:ring-blue-400 text-gray-900 dark:text-gray-100"
             >
               {SOURCE_LANGUAGE_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -575,12 +575,12 @@ export default function Home() {
                 </option>
               ))}
             </select>
-            <span className="text-gray-500">→</span>
+            <span className="text-gray-500 dark:text-gray-400">→</span>
             <select
               value={targetLang}
               onChange={(event) => setTargetLang(event.target.value)}
               disabled={isLoading}
-              className="rounded-md border border-gray-300 px-3 py-1 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1 text-sm shadow-sm focus:border-blue-500 dark:focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:focus:ring-blue-400 text-gray-900 dark:text-gray-100"
             >
               {TARGET_LANGUAGE_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -590,7 +590,7 @@ export default function Home() {
             </select>
           </div>
           {typeof lastUsageTokens === "number" && (
-            <p className="text-sm text-gray-600">上次翻译消耗 {lastUsageTokens.toLocaleString("en-US")} tokens</p>
+            <p className="text-sm text-gray-600 dark:text-gray-400">上次翻译消耗 {lastUsageTokens.toLocaleString("en-US")} tokens</p>
           )}
         </section>
 
@@ -609,34 +609,34 @@ export default function Home() {
         <section className="flex flex-col gap-4 sm:h-[600px] sm:flex-row">
           <div className="flex flex-col sm:flex-1">
             <div className="mb-2 flex items-center justify-between">
-              <span className="text-sm font-medium text-gray-700">原文</span>
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">原文</span>
             </div>
             <div className="relative flex-1">
               <textarea
                 value={sourceText}
                 onChange={(event) => setSourceText(event.target.value)}
                 placeholder="输入要翻译的文本..."
-                className="min-h-[45vh] w-full flex-1 resize-none rounded-lg border border-gray-300 p-4 pr-32 text-sm shadow-sm transition focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 sm:h-full sm:min-h-0"
+                className="min-h-[45vh] w-full flex-1 resize-none rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-4 pr-32 text-sm shadow-sm transition focus:border-blue-500 dark:focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-200 dark:focus:ring-blue-800 text-gray-900 dark:text-gray-100 sm:h-full sm:min-h-0"
               />
               <button
                 type="button"
                 onClick={handleTranslate}
                 disabled={translateDisabled}
-                className={`absolute right-4 top-4 rounded-md px-3 py-1.5 text-sm font-medium text-white shadow transition ${translateDisabled ? "cursor-not-allowed bg-blue-300" : "bg-blue-500 hover:bg-blue-600"}`}
+                className={`absolute right-4 top-4 rounded-md px-3 py-1.5 text-sm font-medium text-white shadow transition ${translateDisabled ? "cursor-not-allowed bg-blue-300 dark:bg-blue-600" : "bg-blue-500 dark:bg-blue-600 hover:bg-blue-600 dark:hover:bg-blue-700"}`}
               >
                 {translateButtonLabel}
               </button>
             </div>
           </div>
-          <div className="hidden w-px bg-gray-200 sm:block" />
+          <div className="hidden w-px bg-gray-200 dark:bg-gray-700 sm:block" />
           <div className="flex flex-col sm:flex-1">
             <div className="mb-2 flex items-center justify-between">
-              <span className="text-sm font-medium text-gray-700">翻译结果</span>
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">翻译结果</span>
               <button
                 type="button"
                 onClick={handleCopy}
                 disabled={!targetText}
-                className={`rounded-md border px-3 py-1 text-xs font-medium transition ${targetText ? "border-gray-300 text-gray-700 hover:border-gray-400 hover:bg-gray-50" : "cursor-not-allowed border-gray-200 text-gray-400"}`}
+                className={`rounded-md border px-3 py-1 text-xs font-medium transition ${targetText ? "border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:border-gray-400 dark:hover:border-gray-500 hover:bg-gray-50 dark:hover:bg-gray-700" : "cursor-not-allowed border-gray-200 dark:border-gray-700 text-gray-400 dark:text-gray-600"}`}
               >
                 {copyStatus === "success" ? "已复制" : "复制"}
               </button>
@@ -645,13 +645,13 @@ export default function Home() {
               value={targetText}
               readOnly
               placeholder="翻译结果将显示在这里..."
-              className="min-h-[40vh] w-full flex-1 resize-none rounded-lg border border-gray-300 bg-gray-100 p-4 text-sm shadow-sm focus:outline-none sm:h-full sm:min-h-0"
+              className="min-h-[40vh] w-full flex-1 resize-none rounded-lg border border-gray-300 dark:border-gray-600 bg-gray-100 dark:bg-gray-700 p-4 text-sm shadow-sm focus:outline-none text-gray-900 dark:text-gray-100 sm:h-full sm:min-h-0"
             />
             {copyStatus === "success" && (
-              <p className="mt-1 text-xs text-green-600">翻译结果已复制到剪贴板</p>
+              <p className="mt-1 text-xs text-green-600 dark:text-green-400">翻译结果已复制到剪贴板</p>
             )}
             {copyStatus === "error" && (
-              <p className="mt-1 text-xs text-red-600">复制失败，请手动复制</p>
+              <p className="mt-1 text-xs text-red-600 dark:text-red-400">复制失败，请手动复制</p>
             )}
           </div>
         </section>
@@ -660,7 +660,7 @@ export default function Home() {
           <button
             onClick={handleClear}
             disabled={isLoading}
-            className="rounded-lg bg-gray-500 px-6 py-2 font-medium text-white transition hover:bg-gray-600 disabled:cursor-not-allowed disabled:bg-gray-300"
+            className="rounded-lg bg-gray-500 dark:bg-gray-600 px-6 py-2 font-medium text-white transition hover:bg-gray-600 dark:hover:bg-gray-700 disabled:cursor-not-allowed disabled:bg-gray-300 dark:disabled:bg-gray-700"
           >
             清空
           </button>
