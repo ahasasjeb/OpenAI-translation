@@ -100,6 +100,7 @@ export async function POST(request: Request) {
 		const openai = getOpenAIClient();
 		responseStream = await openai.responses.stream({
 			model: requestedModel,
+			reasoning: { effort: "low", summary: null },
 			input: [
 				{
 					role: "system",
