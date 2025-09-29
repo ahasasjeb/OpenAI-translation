@@ -137,10 +137,14 @@ export async function POST(request: Request) {
 	}
 
 	const encoder = new TextEncoder();
-	const encode = (chunk: unknown) => encoder.encode(`${JSON.stringify(chunk)}\n`);
 
 	const readable = new ReadableStream<Uint8Array>({
 		async start(controller) {
+			const sendEvent = (type: string, data: unknown) => {
+				const payload = `event: ${type}\n` + `data: ${JSON.stringify(data)}\n\n`;
+				controller.enqueue(encoder.encode(payload));
+			};
+
 			let aggregated = "";
 			const abortStream = (reason?: string) => {
 				try {
@@ -157,7 +161,7 @@ export async function POST(request: Request) {
 							const delta = event.delta ?? "";
 							if (delta) {
 								aggregated += delta;
-								controller.enqueue(encode({ type: "delta", delta }));
+								sendEvent("delta", { delta });
 							}
 							break;
 						}
@@ -167,7 +171,7 @@ export async function POST(request: Request) {
 						case "error": {
 							const errorEvent = event as { error?: { message?: string }; message?: string };
 							const message = errorEvent.error?.message ?? errorEvent.message ?? "调用 OpenAI API 失败";
-							controller.enqueue(encode({ type: "error", code: "openai_error", message }));
+							sendEvent("error", { code: "openai_error", message });
 							abortStream(message);
 							controller.close();
 							return;
@@ -181,11 +185,10 @@ export async function POST(request: Request) {
 				const finalResponse = await responseStream.finalResponse();
 				const output = (aggregated || finalResponse.output_text || "").trim();
 				if (!output) {
-					controller.enqueue(encode({
-						type: "error",
+					sendEvent("error", {
 						code: "empty_translation",
 						message: "未能获取翻译结果，请稍后重试",
-					}));
+					});
 					controller.close();
 					return;
 				}
@@ -198,63 +201,56 @@ export async function POST(request: Request) {
 						timestamp: new Date(),
 					});
 
-					controller.enqueue(encode({
-						type: "final",
-						data: {
-							translation: output,
-							quota: augmentQuota(quota),
-							usage: {
-								tokens: tokensUsed,
-								limit: DAILY_TOKEN_LIMIT,
-							},
-							model: requestedModel,
-							sourceLang,
-							targetLang,
-							quotaExceeded: quota.remaining <= 0,
+					sendEvent("final", {
+						translation: output,
+						quota: augmentQuota(quota),
+						usage: {
+							tokens: tokensUsed,
+							limit: DAILY_TOKEN_LIMIT,
 						},
-					}));
+						model: requestedModel,
+						sourceLang,
+						targetLang,
+						quotaExceeded: quota.remaining <= 0,
+					});
 					controller.close();
 					return;
 				} catch (error) {
 					if (error instanceof QuotaDisabledError) {
 						console.error("Quota disabled when recording quota", error);
-						controller.enqueue(encode({
-							type: "error",
+						sendEvent("error", {
 							code: "quota_disabled",
 							message: error.message,
-						}));
+						});
 						controller.close();
 						return;
 					}
 
 					if (error instanceof DailyQuotaExceededError) {
 						const quota = await getQuotaStatus();
-						controller.enqueue(encode({
-							type: "error",
+						sendEvent("error", {
 							code: "quota_exceeded",
 							message: "请等待下一次北京时间8点再来",
 							quota: quota ? augmentQuota(quota) : null,
-						}));
+						});
 						controller.close();
 						return;
 					}
 
 					console.error("Failed to record quota", error);
-					controller.enqueue(encode({
-						type: "error",
+					sendEvent("error", {
 						code: "quota_persist_failed",
 						message: "额度统计失败，请稍后再试",
-					}));
+					});
 					controller.close();
 				}
 			} catch (error) {
 				console.error("Unexpected streaming error", error);
 				const message = error instanceof Error ? error.message : "翻译失败，请稍后再试";
-				controller.enqueue(encode({
-					type: "error",
+				sendEvent("error", {
 					code: "translation_failed",
 					message,
-				}));
+				});
 				controller.close();
 			}
 		},
@@ -262,8 +258,9 @@ export async function POST(request: Request) {
 
 	return new Response(readable, {
 		headers: {
-			"Content-Type": "application/x-ndjson; charset=utf-8",
+			"Content-Type": "text/event-stream; charset=utf-8",
 			"Cache-Control": "no-cache, no-transform",
+			Connection: "keep-alive",
 		},
 	});
 }

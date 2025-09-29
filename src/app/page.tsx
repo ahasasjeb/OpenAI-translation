@@ -22,11 +22,6 @@ type ApiError = {
   quota?: QuotaInfo;
 };
 
-type StreamDeltaEvent = {
-  type: "delta";
-  delta?: string;
-};
-
 type StreamFinalEvent = {
   type: "final";
   data?: {
@@ -307,62 +302,84 @@ export default function Home() {
       let streamError: string | null = null;
       let shouldStop = false;
 
-      const processLine = (line: string) => {
-        const trimmed = line.trim();
-        if (!trimmed) {
-          return;
-        }
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(trimmed) as unknown;
-        } catch (err) {
-          console.error("Failed to parse stream chunk", err, trimmed);
-          return;
-        }
-        if (!parsed || typeof parsed !== "object" || !("type" in parsed)) {
-          return;
-        }
-        const event = parsed as StreamDeltaEvent | StreamFinalEvent | StreamErrorEvent;
+      const processEvent = (rawEvent: string) => {
+        const lines = rawEvent.split(/\r?\n/);
+        let eventType = "message";
+        const dataLines: string[] = [];
 
-        switch (event.type) {
+        for (const line of lines) {
+          if (!line) {
+            continue;
+          }
+          if (line.startsWith(":")) {
+            continue;
+          }
+          if (line.startsWith("event:")) {
+            eventType = line.slice(6).trim();
+            continue;
+          }
+          if (line.startsWith("data:")) {
+            dataLines.push(line.slice(5).trimStart());
+          }
+        }
+
+        if (dataLines.length === 0) {
+          return;
+        }
+
+        const dataString = dataLines.join("\n");
+        let payload: unknown;
+        try {
+          payload = JSON.parse(dataString) as unknown;
+        } catch (err) {
+          console.error("Failed to parse SSE data", err, dataString);
+          return;
+        }
+        if (!payload || typeof payload !== "object") {
+          return;
+        }
+
+        switch (eventType) {
           case "delta": {
-            const delta = typeof event.delta === "string" ? event.delta : "";
-            if (!delta) {
+            const delta = (payload as { delta?: unknown }).delta;
+            const deltaText = typeof delta === "string" ? delta : "";
+            if (!deltaText) {
               return;
             }
-            aggregated += delta;
+            aggregated += deltaText;
             setTargetText(aggregated);
             break;
           }
           case "final": {
-            const data = event.data ?? {};
-            const finalTranslation = typeof data.translation === "string"
+            const data = payload as StreamFinalEvent["data"];
+            const finalTranslation = typeof data?.translation === "string"
               ? data.translation
               : aggregated;
             aggregated = finalTranslation;
             setTargetText(finalTranslation);
-            if (data.quota) {
+            if (data?.quota) {
               setQuota(data.quota as QuotaInfo);
             }
             setRedisReady(true);
-            const tokenCost = data.usage?.tokens;
+            const tokenCost = data?.usage?.tokens;
             setLastUsageTokens(typeof tokenCost === "number" ? tokenCost : null);
-            if (data.quotaExceeded) {
+            if (data?.quotaExceeded) {
               streamError = "今日额度已用完，请等待下一次北京时间 8 点再来。";
             }
             shouldStop = true;
             break;
           }
           case "error": {
-            const message = typeof event.message === "string"
-              ? event.message
+            const errorPayload = payload as StreamErrorEvent;
+            const message = typeof errorPayload.message === "string"
+              ? errorPayload.message
               : "翻译失败，请稍后再试";
             streamError = message;
-            if (event.code === "quota_disabled") {
+            if (errorPayload.code === "quota_disabled") {
               setRedisReady(false);
             }
-            if (event.quota) {
-              setQuota(event.quota as QuotaInfo);
+            if (errorPayload.quota) {
+              setQuota(errorPayload.quota as QuotaInfo);
             }
             shouldStop = true;
             break;
@@ -372,26 +389,51 @@ export default function Home() {
         }
       };
 
+      const flushEvents = () => {
+        while (!shouldStop) {
+          const doubleNewlineIndex = (() => {
+            const idxRR = buffer.indexOf("\r\n\r\n");
+            const idxNN = buffer.indexOf("\n\n");
+            if (idxRR === -1) {
+              return idxNN;
+            }
+            if (idxNN === -1) {
+              return idxRR;
+            }
+            return Math.min(idxRR, idxNN);
+          })();
+
+          if (doubleNewlineIndex === -1) {
+            break;
+          }
+
+          const separator = buffer.startsWith("\r\n", doubleNewlineIndex) ? "\r\n\r\n" : "\n\n";
+          const rawEvent = buffer.slice(0, doubleNewlineIndex);
+          buffer = buffer.slice(doubleNewlineIndex + separator.length);
+          if (rawEvent.trim()) {
+            processEvent(rawEvent);
+          }
+          if (shouldStop) {
+            break;
+          }
+        }
+      };
+
       while (!shouldStop) {
         const { value, done } = await reader.read();
         if (done) {
           break;
         }
         buffer += decoder.decode(value, { stream: true });
-        let newlineIndex = buffer.indexOf("\n");
-        while (newlineIndex !== -1) {
-          const line = buffer.slice(0, newlineIndex);
-          buffer = buffer.slice(newlineIndex + 1);
-          processLine(line);
-          if (shouldStop) {
-            break;
-          }
-          newlineIndex = buffer.indexOf("\n");
-        }
+        flushEvents();
       }
 
-      if (!shouldStop && buffer.trim()) {
-        processLine(buffer.trim());
+      if (!shouldStop) {
+        buffer += decoder.decode();
+        flushEvents();
+        if (!shouldStop && buffer.trim()) {
+          processEvent(buffer.trim());
+        }
       }
 
       if (shouldStop) {
