@@ -87,6 +87,7 @@ export default function Home() {
   const [copyStatus, setCopyStatus] = useState<"idle" | "success" | "error">("idle");
   const copyResetTimerRef = useRef<number | null>(null);
   const trimmedSourceText = useMemo(() => sourceText.trim(), [sourceText]);
+  const [debouncedSourceText, setDebouncedSourceText] = useState(trimmedSourceText);
 
   const fetchQuota = useCallback(async () => {
     try {
@@ -127,6 +128,21 @@ export default function Home() {
 
   useEffect(() => {
     if (!trimmedSourceText) {
+      setDebouncedSourceText("");
+      return;
+    }
+
+    const handler = window.setTimeout(() => {
+      setDebouncedSourceText(trimmedSourceText);
+    }, 300);
+
+    return () => {
+      window.clearTimeout(handler);
+    };
+  }, [trimmedSourceText]);
+
+  useEffect(() => {
+    if (!debouncedSourceText) {
       setEstimatedTokens(0);
       setTokenEstimateError(null);
       setIsEstimatingTokens(false);
@@ -137,35 +153,32 @@ export default function Home() {
     setIsEstimatingTokens(true);
     setTokenEstimateError(null);
 
-    const timeoutId = window.setTimeout(() => {
-      estimateTranslationTokenUsage({
-        text: trimmedSourceText,
-        model,
-        sourceLang,
-        targetLang,
+    estimateTranslationTokenUsage({
+      text: debouncedSourceText,
+      model,
+      sourceLang,
+      targetLang,
+    })
+      .then((result) => {
+        if (!active) return;
+        setEstimatedTokens(result.totalTokens);
+        setTokenEstimateError(null);
       })
-        .then((result) => {
-          if (!active) return;
-          setEstimatedTokens(result.totalTokens);
-          setTokenEstimateError(null);
-        })
-        .catch((err) => {
-          if (!active) return;
-          console.error("Token estimation failed", err);
-          setTokenEstimateError("Token 预估失败，已使用字符数近似估算");
-          setEstimatedTokens(fallbackCharacterEstimate(trimmedSourceText));
-        })
-        .finally(() => {
-          if (!active) return;
-          setIsEstimatingTokens(false);
-        });
-    }, 250);
+      .catch((err) => {
+        if (!active) return;
+        console.error("Token estimation failed", err);
+        setTokenEstimateError("Token 预估失败，已使用字符数近似估算");
+        setEstimatedTokens(fallbackCharacterEstimate(debouncedSourceText));
+      })
+      .finally(() => {
+        if (!active) return;
+        setIsEstimatingTokens(false);
+      });
 
     return () => {
       active = false;
-      window.clearTimeout(timeoutId);
     };
-  }, [trimmedSourceText, model, sourceLang, targetLang]);
+  }, [debouncedSourceText, model, sourceLang, targetLang]);
 
   useEffect(() => {
     const ref = copyResetTimerRef;
