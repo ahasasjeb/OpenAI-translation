@@ -3,6 +3,8 @@ type RedisClient = ReturnType<(typeof import("redis"))["createClient"]>;
 export const DAILY_TOKEN_LIMIT = 2_500_000;
 const BASE_KEY = "token-usage";
 
+type StorageKind = "redis" | "memory";
+
 type QuotaKeyType = "total" | "requests" | "models";
 
 interface UsageMetadata {
@@ -27,7 +29,16 @@ interface StorageAdapter {
 const globalForQuota = globalThis as unknown as {
 	__redisClient?: RedisClient;
 	__memoryQuotaStore?: MemoryQuotaStore;
+	__quotaStorageKind?: StorageKind;
 };
+
+function setStorageKind(kind: StorageKind) {
+	globalForQuota.__quotaStorageKind = kind;
+}
+
+function getStorageKind(): StorageKind {
+	return globalForQuota.__quotaStorageKind ?? "memory";
+}
 
 class MemoryQuotaStore implements StorageAdapter {
 	private totals = new Map<string, number>();
@@ -102,12 +113,15 @@ async function getStorage(): Promise<StorageAdapter> {
 	const redisClient = await getRedisClient();
 
 	if (redisClient) {
-		return createRedisAdapter(redisClient);
+ 		setStorageKind("redis");
+ 		return createRedisAdapter(redisClient);
 	}
 
 	if (!globalForQuota.__memoryQuotaStore) {
 		globalForQuota.__memoryQuotaStore = new MemoryQuotaStore();
 	}
+
+	setStorageKind("memory");
 
 	return globalForQuota.__memoryQuotaStore;
 }
@@ -201,6 +215,10 @@ export async function getQuotaStatus(now = new Date()): Promise<QuotaStatus> {
 	const used = await storage.getUsage(dateKey);
 
 	return toQuotaStatus(used, now);
+}
+
+export function getQuotaStorageKind() {
+	return getStorageKind();
 }
 
 export async function incrementQuota(meta: UsageMetadata): Promise<QuotaStatus> {

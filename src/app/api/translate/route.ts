@@ -7,6 +7,7 @@ import {
 	DailyQuotaExceededError,
 	ensureQuotaAvailable,
 	getQuotaStatus,
+	getQuotaStorageKind,
 	incrementQuota,
 	nextBeijingReset,
 } from "@/lib/quotaStore";
@@ -164,6 +165,7 @@ export async function POST(request: Request) {
 				sourceLang,
 				targetLang,
 			},
+			storage: getQuotaStorageKind(),
 		});
 	} catch (error) {
 		if (error instanceof DailyQuotaExceededError) {
@@ -185,8 +187,9 @@ function buildPrompt(text: string, source: string, target: string) {
 		`Translate the following content from ${sourceLabel} to ${target}.`,
 		"Maintain markdown formatting, numbers, punctuation, emoji, and code blocks.",
 		"Keep the tone natural and faithful. Do not explain or wrap the answer with additional descriptions.",
-		"Text:",
+		"<Text_Translate>",
 		text,
+        "/<Text_Translate>",
 	].join("\n\n");
 }
 
@@ -222,6 +225,7 @@ function quotaExceededResponse(quota: Awaited<ReturnType<typeof getQuotaStatus>>
 		error: "quota_exceeded",
 		message: "请等待下一次北京时间8点再来",
 		quota: augmentQuota(quota),
+		storage: getQuotaStorageKind(),
 	};
 
 	return NextResponse.json(payload, { status: 429 });
