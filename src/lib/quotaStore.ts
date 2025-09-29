@@ -21,13 +21,26 @@ export interface QuotaStatus {
 
 const globalForQuota = globalThis as unknown as {
 	__redisClient?: RedisClient;
+	__quotaDisabledReason?: string | null;
 };
 
-export class RedisUnavailableError extends Error {
-	constructor(message = "Redis 未配置或连接失败") {
+export class QuotaDisabledError extends Error {
+	constructor(message = "Quota feature disabled (Redis unavailable)") {
 		super(message);
-		this.name = "RedisUnavailableError";
+		this.name = "QuotaDisabledError";
 	}
+}
+
+export function getQuotaDisabledReason() {
+	return globalForQuota.__quotaDisabledReason ?? null;
+}
+
+function markQuotaDisabled(reason: string) {
+	globalForQuota.__quotaDisabledReason = reason;
+}
+
+function markQuotaEnabled() {
+	globalForQuota.__quotaDisabledReason = null;
 }
 
 class RedisQuotaStore {
@@ -76,13 +89,32 @@ function normaliseTokens(tokens: number) {
 	return Math.max(0, Math.round(tokens));
 }
 
-async function getRedisClient(): Promise<RedisClient> {
+
+async function getRedisClient(): Promise<RedisClient | null> {
 	if (!process.env.REDIS_URL) {
-		throw new RedisUnavailableError("REDIS_URL 未配置，无法统计额度");
+		markQuotaDisabled("REDIS_URL 未配置");
+		return null;
 	}
 
 	if (globalForQuota.__redisClient) {
-		return globalForQuota.__redisClient;
+		if (globalForQuota.__redisClient.isOpen) {
+			markQuotaEnabled();
+			return globalForQuota.__redisClient;
+		}
+		try {
+			await globalForQuota.__redisClient.connect();
+			markQuotaEnabled();
+			return globalForQuota.__redisClient;
+		} catch (error) {
+			console.error("Failed to reconnect Redis client", error);
+			try {
+				await globalForQuota.__redisClient.disconnect();
+			} catch {
+				// ignore
+			}
+			globalForQuota.__redisClient = undefined;
+			markQuotaDisabled(`Redis 重连失败: ${error instanceof Error ? error.message : "未知错误"}`);
+		}
 	}
 
 	const { createClient } = await import("redis");
@@ -97,15 +129,21 @@ async function getRedisClient(): Promise<RedisClient> {
 			await client.connect();
 		}
 	} catch (error) {
-		throw new RedisUnavailableError(`Redis 连接失败: ${error instanceof Error ? error.message : "未知错误"}`);
+		console.error("Redis connection failed", error);
+		markQuotaDisabled(`Redis 连接失败: ${error instanceof Error ? error.message : "未知错误"}`);
+		return null;
 	}
 
 	globalForQuota.__redisClient = client;
+markQuotaEnabled();
 	return client;
 }
 
 async function getQuotaStore() {
 	const client = await getRedisClient();
+	if (!client) {
+		return null;
+	}
 	return new RedisQuotaStore(client);
 }
 
@@ -150,8 +188,11 @@ export function nextBeijingReset(now = new Date()) {
 	return nextUtcMidnight(now);
 }
 
-export async function getQuotaStatus(now = new Date()): Promise<QuotaStatus> {
+export async function getQuotaStatus(now = new Date()): Promise<QuotaStatus | null> {
 	const store = await getQuotaStore();
+	if (!store) {
+		return null;
+	}
 	const dateKey = currentDateKey(now);
 	const used = await store.getUsage(dateKey);
 
@@ -159,8 +200,11 @@ export async function getQuotaStatus(now = new Date()): Promise<QuotaStatus> {
 }
 
 export async function incrementQuota(meta: UsageMetadata): Promise<QuotaStatus> {
-	const timestamp = meta.timestamp ?? new Date();
 	const store = await getQuotaStore();
+	if (!store) {
+		throw new QuotaDisabledError(getQuotaDisabledReason() ?? "Redis unavailable");
+	}
+	const timestamp = meta.timestamp ?? new Date();
 	const dateKey = currentDateKey(timestamp);
 	const total = await store.incrementUsage(dateKey, {
 		model: meta.model,
@@ -180,6 +224,9 @@ export class DailyQuotaExceededError extends Error {
 
 export async function ensureQuotaAvailable(now = new Date()): Promise<QuotaStatus> {
 	const status = await getQuotaStatus(now);
+	if (!status) {
+		throw new QuotaDisabledError(getQuotaDisabledReason() ?? "Redis unavailable");
+	}
 	if (status.remaining <= 0) {
 		throw new DailyQuotaExceededError();
 	}

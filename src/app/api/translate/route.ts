@@ -2,15 +2,18 @@ import { NextResponse } from "next/server";
 import OpenAI, { APIError } from "openai";
 
 import { DEFAULT_MODEL, SUPPORTED_MODELS, type SupportedModel } from "@/config/models";
+import { TRANSLATION_SYSTEM_PROMPT, buildTranslationPrompt } from "@/config/prompt";
 import {
 	DAILY_TOKEN_LIMIT,
 	DailyQuotaExceededError,
-	RedisUnavailableError,
+	QuotaDisabledError,
 	ensureQuotaAvailable,
+	getQuotaDisabledReason,
 	getQuotaStatus,
 	incrementQuota,
 	nextBeijingReset,
 } from "@/lib/quotaStore";
+import type { QuotaStatus } from "@/lib/quotaStore";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,9 +25,6 @@ interface TranslatePayload {
 	targetLang?: string;
 	model?: string;
 }
-
-const SYSTEM_PROMPT =
-	"You are a world-class translation engine. Detect the source language when necessary, preserve original formatting, whitespace, and code blocks. Do not add explanations or commentary—only output the translated text.";
 
 const globalForOpenAI = globalThis as unknown as {
 	__openAI?: OpenAI;
@@ -49,9 +49,9 @@ export async function POST(request: Request) {
 	try {
 		await ensureQuotaAvailable(now);
 	} catch (error) {
-		if (error instanceof RedisUnavailableError) {
-			console.error("Redis unavailable when checking quota", error);
-			return redisUnavailableResponse(error);
+		if (error instanceof QuotaDisabledError) {
+			console.error("Quota disabled when checking quota", error);
+			return quotaDisabledResponse(error.message);
 		}
 
 		if (error instanceof DailyQuotaExceededError) {
@@ -104,11 +104,11 @@ export async function POST(request: Request) {
 			input: [
 				{
 					role: "system",
-					content: SYSTEM_PROMPT,
+					content: TRANSLATION_SYSTEM_PROMPT,
 				},
 				{
 					role: "user",
-					content: buildPrompt(text, sourceLang, targetLang),
+					content: buildTranslationPrompt(text, sourceLang, targetLang),
 				},
 			],
 		});
@@ -171,9 +171,9 @@ export async function POST(request: Request) {
 			},
 		});
 	} catch (error) {
-		if (error instanceof RedisUnavailableError) {
-			console.error("Redis unavailable when recording quota", error);
-			return redisUnavailableResponse(error);
+		if (error instanceof QuotaDisabledError) {
+			console.error("Quota disabled when recording quota", error);
+			return quotaDisabledResponse(error.message);
 		}
 
 		if (error instanceof DailyQuotaExceededError) {
@@ -186,17 +186,6 @@ export async function POST(request: Request) {
 			message: "额度统计失败，请稍后再试",
 		}, { status: 500 });
 	}
-}
-
-function buildPrompt(text: string, source: string, target: string) {
-	const sourceLabel = source === "auto" ? "auto-detect" : source;
-	return [
-		`Translate the following content from ${sourceLabel} to ${target}.`,
-		"Maintain markdown formatting, numbers, punctuation, emoji, and code blocks.",
-		"Keep the tone natural and faithful. Do not explain or wrap the answer with additional descriptions.",
-		"Text:",
-		text,
-	].join("\n\n");
 }
 
 function normaliseUsage(
@@ -218,7 +207,7 @@ function normaliseUsage(
 	return Math.max(1, estimated);
 }
 
-function augmentQuota(quota: Awaited<ReturnType<typeof getQuotaStatus>>) {
+function augmentQuota(quota: QuotaStatus) {
 	const resetAtBeijing = nextBeijingReset(new Date(quota.serverTime)).toISOString();
 	return {
 		...quota,
@@ -226,7 +215,7 @@ function augmentQuota(quota: Awaited<ReturnType<typeof getQuotaStatus>>) {
 	};
 }
 
-function quotaExceededResponse(quota: Awaited<ReturnType<typeof getQuotaStatus>>) {
+function quotaExceededResponse(quota: QuotaStatus) {
 	const payload = {
 		error: "quota_exceeded",
 		message: "请等待下一次北京时间8点再来",
@@ -237,25 +226,16 @@ function quotaExceededResponse(quota: Awaited<ReturnType<typeof getQuotaStatus>>
 }
 
 async function quotaExceededJson(referenceDate?: Date) {
-	try {
-		const quota = await getQuotaStatus(referenceDate ?? new Date());
-		return quotaExceededResponse(quota);
-	} catch (error) {
-		if (error instanceof RedisUnavailableError) {
-			console.error("Redis unavailable when fetching quota", error);
-			return redisUnavailableResponse(error);
-		}
-		console.error("Failed to fetch quota after exceed", error);
-		return NextResponse.json({
-			error: "quota_check_failed",
-			message: "无法校验额度，请稍后再试",
-		}, { status: 500 });
+	const quota = await getQuotaStatus(referenceDate ?? new Date());
+	if (!quota) {
+		return quotaDisabledResponse(getQuotaDisabledReason() ?? "Redis 未配置");
 	}
+	return quotaExceededResponse(quota);
 }
 
-function redisUnavailableResponse(error: RedisUnavailableError) {
+function quotaDisabledResponse(reason: string) {
 	return NextResponse.json({
-		error: "redis_unavailable",
-		message: error.message,
+		error: "quota_disabled",
+		message: reason,
 	}, { status: 503 });
 }

@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { DEFAULT_MODEL, MODEL_LABELS, SUPPORTED_MODELS, type SupportedModel } from "@/config/models";
+import { estimateTranslationTokenUsage, fallbackCharacterEstimate } from "@/lib/tokenEstimator";
 
 const QUOTA_POLL_INTERVAL = 5_000;
 
@@ -36,6 +37,7 @@ type ApiError = {
 };
 
 type QuotaResponse = {
+  enabled?: boolean;
   quota?: QuotaInfo;
   error?: string;
   message?: string;
@@ -68,6 +70,12 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [lastUsageTokens, setLastUsageTokens] = useState<number | null>(null);
+  const [estimatedTokens, setEstimatedTokens] = useState<number | null>(null);
+  const [isEstimatingTokens, setIsEstimatingTokens] = useState(false);
+  const [tokenEstimateError, setTokenEstimateError] = useState<string | null>(null);
+  const [copyStatus, setCopyStatus] = useState<"idle" | "success" | "error">("idle");
+  const copyResetTimerRef = useRef<number | null>(null);
+  const trimmedSourceText = useMemo(() => sourceText.trim(), [sourceText]);
 
   const fetchQuota = useCallback(async () => {
     try {
@@ -77,7 +85,14 @@ export default function Home() {
       if (!response.ok) {
         const message = data?.message ?? `额度接口返回 ${response.status}`;
         setQuotaError(message);
-        setRedisReady(!(data?.error === "redis_unavailable"));
+        setRedisReady(!(data?.error === "quota_disabled"));
+        return;
+      }
+
+      if (data?.enabled === false) {
+        setRedisReady(false);
+        setQuota(null);
+        setQuotaError(data?.message ?? "Redis 未就绪，额度功能已关闭");
         return;
       }
 
@@ -99,15 +114,131 @@ export default function Home() {
     return () => clearInterval(id);
   }, [fetchQuota]);
 
+  useEffect(() => {
+    if (!trimmedSourceText) {
+      setEstimatedTokens(0);
+      setTokenEstimateError(null);
+      setIsEstimatingTokens(false);
+      return;
+    }
+
+    let active = true;
+    setIsEstimatingTokens(true);
+    setTokenEstimateError(null);
+
+    const timeoutId = window.setTimeout(() => {
+      estimateTranslationTokenUsage({
+        text: trimmedSourceText,
+        model,
+        sourceLang,
+        targetLang,
+      })
+        .then((result) => {
+          if (!active) return;
+          setEstimatedTokens(result.totalTokens);
+          setTokenEstimateError(null);
+        })
+        .catch((err) => {
+          if (!active) return;
+          console.error("Token estimation failed", err);
+          setTokenEstimateError("Token 预估失败，已使用字符数近似估算");
+          setEstimatedTokens(fallbackCharacterEstimate(trimmedSourceText));
+        })
+        .finally(() => {
+          if (!active) return;
+          setIsEstimatingTokens(false);
+        });
+    }, 250);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timeoutId);
+    };
+  }, [trimmedSourceText, model, sourceLang, targetLang]);
+
+  useEffect(() => {
+    const ref = copyResetTimerRef;
+    return () => {
+      const timeoutId = ref.current;
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [copyResetTimerRef]);
+
+  const quotaPercent = useMemo(() => {
+    if (!quota || quota.limit === 0) return 0;
+    return Math.min(100, (quota.used / quota.limit) * 100);
+  }, [quota]);
+
+  const quotaRemainingLabel = quota?.remaining?.toLocaleString("en-US") ?? "--";
+  const quotaUsedLabel = quota?.used?.toLocaleString("en-US") ?? "--";
+  const quotaLimitLabel = quota?.limit?.toLocaleString("en-US") ?? "2,500,000";
+  const resetLabel = quota ? formatBeijingTime(quota.resetAt) : "--";
+  const quotaExceeded = quota ? quota.remaining <= 0 : false;
+
+  const estimatedOverLimit = useMemo(() => {
+    if (!quota || estimatedTokens == null) {
+      return false;
+    }
+    return estimatedTokens > quota.remaining;
+  }, [quota, estimatedTokens]);
+
+  const estimatedRemaining = useMemo(() => {
+    if (!quota || estimatedTokens == null) {
+      return null;
+    }
+    return quota.remaining - estimatedTokens;
+  }, [quota, estimatedTokens]);
+
+  const translateDisabled = isLoading
+    || !trimmedSourceText
+    || quotaExceeded
+    || !redisReady
+    || estimatedOverLimit
+    || isEstimatingTokens;
+
+  const translateButtonLabel = !redisReady
+    ? "Redis 未就绪"
+    : isLoading
+      ? "翻译中..."
+      : isEstimatingTokens
+        ? "计算 Token..."
+        : "翻译";
+
+  const estimatedTokensDisplay = estimatedTokens != null ? estimatedTokens.toLocaleString("en-US") : "--";
+  const estimatedRemainingDisplay = estimatedRemaining != null ? Math.max(0, estimatedRemaining).toLocaleString("en-US") : null;
+  const estimateBannerClass = estimatedOverLimit
+    ? "border-red-200 bg-red-50 text-red-700"
+    : "border-blue-100 bg-blue-50 text-blue-700";
+  const estimateMessage = isEstimatingTokens
+    ? "正在估算本次请求的 Token 消耗…"
+    : `预计本次请求将消耗 ${estimatedTokensDisplay} tokens${estimatedRemainingDisplay != null ? `，剩余 ${estimatedRemainingDisplay}` : ""}`;
+
   const handleTranslate = useCallback(async () => {
-    if (!sourceText.trim()) {
+    if (!trimmedSourceText) {
       setError("请输入需要翻译的文本");
+      return;
+    }
+
+    if (isEstimatingTokens) {
+      setError("Token 预估尚未完成，请稍后重试");
+      return;
+    }
+
+    if (estimatedOverLimit) {
+      setError("预计本次请求会超出剩余额度，请缩短文本或等待额度重置");
       return;
     }
 
     setIsLoading(true);
     setError(null);
     setLastUsageTokens(null);
+    if (copyResetTimerRef.current !== null) {
+      window.clearTimeout(copyResetTimerRef.current);
+      copyResetTimerRef.current = null;
+    }
+    setCopyStatus("idle");
 
     try {
       const response = await fetch("/api/translate", {
@@ -126,7 +257,7 @@ export default function Home() {
         const errorPayload = json as ApiError;
         const message = errorPayload.message ?? "翻译失败，请稍后再试";
         setError(message);
-        if ("error" in errorPayload && errorPayload.error === "redis_unavailable") {
+        if ("error" in errorPayload && errorPayload.error === "quota_disabled") {
           setRedisReady(false);
         }
         if (errorPayload.quota) {
@@ -141,6 +272,11 @@ export default function Home() {
       }
 
       setTargetText(json.data.translation);
+      if (copyResetTimerRef.current !== null) {
+        window.clearTimeout(copyResetTimerRef.current);
+        copyResetTimerRef.current = null;
+      }
+      setCopyStatus("idle");
       if (json.data.quota) {
         setQuota(json.data.quota);
       }
@@ -153,26 +289,43 @@ export default function Home() {
     } finally {
       setIsLoading(false);
     }
-  }, [model, sourceLang, sourceText, targetLang]);
+  }, [estimatedOverLimit, isEstimatingTokens, model, sourceLang, sourceText, targetLang, trimmedSourceText]);
 
   const handleClear = useCallback(() => {
     setSourceText("");
     setTargetText("");
     setError(null);
     setLastUsageTokens(null);
+    setEstimatedTokens(0);
+    setTokenEstimateError(null);
+    setCopyStatus("idle");
+    if (copyResetTimerRef.current !== null) {
+      window.clearTimeout(copyResetTimerRef.current);
+      copyResetTimerRef.current = null;
+    }
   }, []);
 
-  const quotaPercent = useMemo(() => {
-    if (!quota || quota.limit === 0) return 0;
-    return Math.min(100, (quota.used / quota.limit) * 100);
-  }, [quota]);
+  const handleCopy = useCallback(async () => {
+    if (!targetText) {
+      return;
+    }
 
-  const quotaRemaining = quota?.remaining?.toLocaleString("en-US") ?? "--";
-  const quotaUsed = quota?.used?.toLocaleString("en-US") ?? "--";
-  const quotaLimit = quota?.limit?.toLocaleString("en-US") ?? "2,500,000";
-  const resetLabel = quota ? formatBeijingTime(quota.resetAt) : "--";
-  const quotaExceeded = quota ? quota.remaining <= 0 : false;
-  const translateDisabled = isLoading || !sourceText.trim() || quotaExceeded || !redisReady;
+    try {
+      await navigator.clipboard.writeText(targetText);
+      setCopyStatus("success");
+    } catch (err) {
+      console.error("Failed to copy translation", err);
+      setCopyStatus("error");
+    } finally {
+      if (copyResetTimerRef.current !== null) {
+        window.clearTimeout(copyResetTimerRef.current);
+      }
+      copyResetTimerRef.current = window.setTimeout(() => {
+        setCopyStatus("idle");
+        copyResetTimerRef.current = null;
+      }, 2000);
+    }
+  }, [targetText]);
 
   return (
     <div className="min-h-screen bg-gray-50 p-4">
@@ -186,11 +339,11 @@ export default function Home() {
             <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
               <div>
                 <p className="text-sm font-medium text-gray-700">今日已用 Tokens</p>
-                <p className="text-2xl font-semibold text-gray-900">{quotaUsed}</p>
+                <p className="text-2xl font-semibold text-gray-900">{quotaUsedLabel}</p>
               </div>
               <div>
                 <p className="text-sm font-medium text-gray-700">剩余额度</p>
-                <p className="text-lg text-gray-900">{quotaRemaining} / {quotaLimit}</p>
+                <p className="text-lg text-gray-900">{quotaRemainingLabel} / {quotaLimitLabel}</p>
               </div>
               <div>
                 <p className="text-sm font-medium text-gray-700">下次重置（北京时间）</p>
@@ -268,23 +421,55 @@ export default function Home() {
           )}
         </section>
 
+        {trimmedSourceText && (
+          <section className={`rounded-lg border p-3 text-sm ${estimateBannerClass}`}>
+            <p>{estimateMessage}</p>
+            {tokenEstimateError && (
+              <p className="mt-1 text-xs text-current">{tokenEstimateError}</p>
+            )}
+            {estimatedOverLimit && (
+              <p className="mt-1 text-xs">预计将超出剩余额度，请缩短文本或等待额度重置。</p>
+            )}
+          </section>
+        )}
+
         <section className="flex flex-col gap-4 sm:h-[600px] sm:flex-row">
-          <div className="sm:flex-1">
+          <div className="flex flex-col sm:flex-1">
+            <div className="mb-2">
+              <span className="text-sm font-medium text-gray-700">原文</span>
+            </div>
             <textarea
               value={sourceText}
               onChange={(event) => setSourceText(event.target.value)}
               placeholder="输入要翻译的文本..."
-              className="h-60 w-full resize-none rounded-lg border border-gray-300 p-4 text-sm shadow-sm transition focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 sm:h-full"
+              className="h-60 w-full flex-1 resize-none rounded-lg border border-gray-300 p-4 text-sm shadow-sm transition focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 sm:h-full"
             />
           </div>
           <div className="hidden w-px bg-gray-200 sm:block" />
-          <div className="sm:flex-1">
+          <div className="flex flex-col sm:flex-1">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm font-medium text-gray-700">翻译结果</span>
+              <button
+                type="button"
+                onClick={handleCopy}
+                disabled={!targetText}
+                className={`rounded-md border px-3 py-1 text-xs font-medium transition ${targetText ? "border-gray-300 text-gray-700 hover:border-gray-400 hover:bg-gray-50" : "cursor-not-allowed border-gray-200 text-gray-400"}`}
+              >
+                {copyStatus === "success" ? "已复制" : "复制"}
+              </button>
+            </div>
             <textarea
               value={targetText}
               readOnly
               placeholder="翻译结果将显示在这里..."
-              className="h-60 w-full resize-none rounded-lg border border-gray-300 bg-gray-100 p-4 text-sm shadow-sm focus:outline-none sm:h-full"
+              className="h-60 w-full flex-1 resize-none rounded-lg border border-gray-300 bg-gray-100 p-4 text-sm shadow-sm focus:outline-none sm:h-full"
             />
+            {copyStatus === "success" && (
+              <p className="mt-1 text-xs text-green-600">翻译结果已复制到剪贴板</p>
+            )}
+            {copyStatus === "error" && (
+              <p className="mt-1 text-xs text-red-600">复制失败，请手动复制</p>
+            )}
           </div>
         </section>
 
@@ -294,7 +479,7 @@ export default function Home() {
             disabled={translateDisabled}
             className={`rounded-lg px-6 py-2 font-medium text-white transition ${translateDisabled ? "cursor-not-allowed bg-blue-300" : "bg-blue-500 hover:bg-blue-600"}`}
           >
-            {!redisReady ? "Redis 未就绪" : isLoading ? "翻译中..." : "翻译"}
+            {translateButtonLabel}
           </button>
           <button
             onClick={handleClear}
