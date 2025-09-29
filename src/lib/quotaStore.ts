@@ -3,8 +3,6 @@ type RedisClient = ReturnType<(typeof import("redis"))["createClient"]>;
 export const DAILY_TOKEN_LIMIT = 2_500_000;
 const BASE_KEY = "token-usage";
 
-type StorageKind = "redis" | "memory";
-
 type QuotaKeyType = "total" | "requests" | "models";
 
 interface UsageMetadata {
@@ -21,62 +19,55 @@ export interface QuotaStatus {
 	serverTime: string; // ISO 时间（UTC）
 }
 
-interface StorageAdapter {
-	getUsage(dateKey: string): Promise<number>;
-	incrementUsage(dateKey: string, meta: UsageMetadata): Promise<number>;
-}
-
 const globalForQuota = globalThis as unknown as {
 	__redisClient?: RedisClient;
-	__memoryQuotaStore?: MemoryQuotaStore;
-	__quotaStorageKind?: StorageKind;
 };
 
-function setStorageKind(kind: StorageKind) {
-	globalForQuota.__quotaStorageKind = kind;
+export class RedisUnavailableError extends Error {
+	constructor(message = "Redis 未配置或连接失败") {
+		super(message);
+		this.name = "RedisUnavailableError";
+	}
 }
 
-function getStorageKind(): StorageKind {
-	return globalForQuota.__quotaStorageKind ?? "memory";
-}
-
-class MemoryQuotaStore implements StorageAdapter {
-	private totals = new Map<string, number>();
-	private models = new Map<string, Map<string, number>>();
-	private requests = new Map<string, number>();
+class RedisQuotaStore {
+	constructor(private readonly client: RedisClient) {}
 
 	async getUsage(dateKey: string) {
-		this.prune(dateKey);
-		return this.totals.get(dateKey) ?? 0;
+		const totalKey = composeKey(dateKey, "total");
+		const totalRaw = await this.client.get(totalKey);
+		return totalRaw ? Number(totalRaw) : 0;
 	}
 
 	async incrementUsage(dateKey: string, meta: UsageMetadata) {
-		this.prune(dateKey);
-
 		const tokens = normaliseTokens(meta.tokens);
-		const prevTotal = this.totals.get(dateKey) ?? 0;
-		const nextTotal = prevTotal + tokens;
+		const totalKey = composeKey(dateKey, "total");
+		const requestsKey = composeKey(dateKey, "requests");
+		const modelsKey = composeKey(dateKey, "models");
+		const expireSeconds = secondsUntilNextUtcMidnight(meta.timestamp ?? new Date());
 
-		this.totals.set(dateKey, nextTotal);
-		this.requests.set(dateKey, (this.requests.get(dateKey) ?? 0) + 1);
+		const multi = this.client.multi();
 
-		if (meta.model) {
-			const modelMap = this.models.get(dateKey) ?? new Map<string, number>();
-			modelMap.set(meta.model, (modelMap.get(meta.model) ?? 0) + tokens);
-			this.models.set(dateKey, modelMap);
+		if (tokens > 0) {
+			multi.incrBy(totalKey, tokens);
 		}
 
-		return nextTotal;
-	}
+		multi.incr(requestsKey);
+		multi.expire(totalKey, expireSeconds, "NX");
+		multi.expire(requestsKey, expireSeconds, "NX");
 
-	private prune(currentKey: string) {
-		for (const key of this.totals.keys()) {
-			if (key !== currentKey) {
-				this.totals.delete(key);
-				this.models.delete(key);
-				this.requests.delete(key);
-			}
+		if (meta.model && tokens > 0) {
+			multi.hIncrBy(modelsKey, meta.model, tokens);
+			multi.expire(modelsKey, expireSeconds, "NX");
 		}
+
+		const execResult = await multi.exec();
+		if (!execResult) {
+			throw new Error("Failed to execute Redis transaction for quota");
+		}
+
+		const total = await this.client.get(totalKey);
+		return total ? Number(total) : 0;
 	}
 }
 
@@ -85,9 +76,9 @@ function normaliseTokens(tokens: number) {
 	return Math.max(0, Math.round(tokens));
 }
 
-async function getRedisClient(): Promise<RedisClient | null> {
+async function getRedisClient(): Promise<RedisClient> {
 	if (!process.env.REDIS_URL) {
-		return null;
+		throw new RedisUnavailableError("REDIS_URL 未配置，无法统计额度");
 	}
 
 	if (globalForQuota.__redisClient) {
@@ -101,71 +92,21 @@ async function getRedisClient(): Promise<RedisClient | null> {
 		console.error("Redis client error", err);
 	});
 
-	if (!client.isOpen) {
-		await client.connect();
+	try {
+		if (!client.isOpen) {
+			await client.connect();
+		}
+	} catch (error) {
+		throw new RedisUnavailableError(`Redis 连接失败: ${error instanceof Error ? error.message : "未知错误"}`);
 	}
 
 	globalForQuota.__redisClient = client;
 	return client;
 }
 
-async function getStorage(): Promise<StorageAdapter> {
-	const redisClient = await getRedisClient();
-
-	if (redisClient) {
- 		setStorageKind("redis");
- 		return createRedisAdapter(redisClient);
-	}
-
-	if (!globalForQuota.__memoryQuotaStore) {
-		globalForQuota.__memoryQuotaStore = new MemoryQuotaStore();
-	}
-
-	setStorageKind("memory");
-
-	return globalForQuota.__memoryQuotaStore;
-}
-
-function createRedisAdapter(client: RedisClient): StorageAdapter {
-	return {
-		async getUsage(dateKey: string) {
-			const totalKey = composeKey(dateKey, "total");
-			const totalRaw = await client.get(totalKey);
-			return totalRaw ? Number(totalRaw) : 0;
-		},
-		async incrementUsage(dateKey: string, meta: UsageMetadata) {
-			const tokens = normaliseTokens(meta.tokens);
-			if (tokens === 0) {
-				const totalRaw = await client.get(composeKey(dateKey, "total"));
-				return totalRaw ? Number(totalRaw) : 0;
-			}
-
-			const totalKey = composeKey(dateKey, "total");
-			const requestsKey = composeKey(dateKey, "requests");
-			const modelsKey = composeKey(dateKey, "models");
-
-			const expireSeconds = secondsUntilNextUtcMidnight(meta.timestamp ?? new Date());
-
-			const multi = client.multi();
-			multi.incrBy(totalKey, tokens);
-			multi.incr(requestsKey);
-			multi.expire(totalKey, expireSeconds, "NX");
-			multi.expire(requestsKey, expireSeconds, "NX");
-
-			if (meta.model) {
-				multi.hIncrBy(modelsKey, meta.model, tokens);
-				multi.expire(modelsKey, expireSeconds, "NX");
-			}
-
-			const execResult = await multi.exec();
-			if (!execResult) {
-				throw new Error("Failed to execute Redis transaction for quota");
-			}
-
-			const totalRaw = await client.get(totalKey);
-			return totalRaw ? Number(totalRaw) : 0;
-		},
-	} satisfies StorageAdapter;
+async function getQuotaStore() {
+	const client = await getRedisClient();
+	return new RedisQuotaStore(client);
 }
 
 function composeKey(dateKey: string, type: QuotaKeyType) {
@@ -210,22 +151,18 @@ export function nextBeijingReset(now = new Date()) {
 }
 
 export async function getQuotaStatus(now = new Date()): Promise<QuotaStatus> {
-	const storage = await getStorage();
+	const store = await getQuotaStore();
 	const dateKey = currentDateKey(now);
-	const used = await storage.getUsage(dateKey);
+	const used = await store.getUsage(dateKey);
 
 	return toQuotaStatus(used, now);
 }
 
-export function getQuotaStorageKind() {
-	return getStorageKind();
-}
-
 export async function incrementQuota(meta: UsageMetadata): Promise<QuotaStatus> {
 	const timestamp = meta.timestamp ?? new Date();
-	const storage = await getStorage();
+	const store = await getQuotaStore();
 	const dateKey = currentDateKey(timestamp);
-	const total = await storage.incrementUsage(dateKey, {
+	const total = await store.incrementUsage(dateKey, {
 		model: meta.model,
 		tokens: meta.tokens,
 		timestamp,

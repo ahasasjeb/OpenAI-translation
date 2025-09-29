@@ -35,6 +35,12 @@ type ApiError = {
   quota?: QuotaInfo;
 };
 
+type QuotaResponse = {
+  quota?: QuotaInfo;
+  error?: string;
+  message?: string;
+};
+
 const SOURCE_LANGUAGE_OPTIONS = [
   { value: "auto", label: "自动" },
   { value: "zh", label: "中文" },
@@ -58,6 +64,7 @@ export default function Home() {
   const [targetLang, setTargetLang] = useState("zh");
   const [quota, setQuota] = useState<QuotaInfo | null>(null);
   const [quotaError, setQuotaError] = useState<string | null>(null);
+  const [redisReady, setRedisReady] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [lastUsageTokens, setLastUsageTokens] = useState<number | null>(null);
@@ -65,17 +72,24 @@ export default function Home() {
   const fetchQuota = useCallback(async () => {
     try {
       const response = await fetch("/api/quota", { cache: "no-store" });
+      const data = (await response.json().catch(() => null)) as QuotaResponse | null;
+
       if (!response.ok) {
-        throw new Error(`Quota API responded with ${response.status}`);
+        const message = data?.message ?? `额度接口返回 ${response.status}`;
+        setQuotaError(message);
+        setRedisReady(!(data?.error === "redis_unavailable"));
+        return;
       }
-      const data = (await response.json()) as { quota?: QuotaInfo };
-      if (data.quota) {
+
+      if (data?.quota) {
         setQuota(data.quota);
         setQuotaError(null);
+        setRedisReady(true);
       }
     } catch (err) {
       console.error("Failed to fetch quota", err);
       setQuotaError("额度状态同步失败，请稍后重试");
+      setRedisReady(false);
     }
   }, []);
 
@@ -112,6 +126,9 @@ export default function Home() {
         const errorPayload = json as ApiError;
         const message = errorPayload.message ?? "翻译失败，请稍后再试";
         setError(message);
+        if ("error" in errorPayload && errorPayload.error === "redis_unavailable") {
+          setRedisReady(false);
+        }
         if (errorPayload.quota) {
           setQuota(errorPayload.quota);
         }
@@ -127,6 +144,7 @@ export default function Home() {
       if (json.data.quota) {
         setQuota(json.data.quota);
       }
+      setRedisReady(true);
       const tokenCost = json.data.usage?.tokens;
       setLastUsageTokens(typeof tokenCost === "number" ? tokenCost : null);
     } catch (err) {
@@ -154,7 +172,7 @@ export default function Home() {
   const quotaLimit = quota?.limit?.toLocaleString("en-US") ?? "2,500,000";
   const resetLabel = quota ? formatBeijingTime(quota.resetAt) : "--";
   const quotaExceeded = quota ? quota.remaining <= 0 : false;
-  const translateDisabled = isLoading || !sourceText.trim() || quotaExceeded;
+  const translateDisabled = isLoading || !sourceText.trim() || quotaExceeded || !redisReady;
 
   return (
     <div className="min-h-screen bg-gray-50 p-4">
@@ -187,6 +205,9 @@ export default function Home() {
             </div>
           </div>
           {quotaError && <p className="text-sm text-red-600">{quotaError}</p>}
+          {!redisReady && !quotaError && (
+            <p className="text-sm text-red-600">Redis 未就绪，无法记录额度。</p>
+          )}
           {error && (
             <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">
               {error}
@@ -273,7 +294,7 @@ export default function Home() {
             disabled={translateDisabled}
             className={`rounded-lg px-6 py-2 font-medium text-white transition ${translateDisabled ? "cursor-not-allowed bg-blue-300" : "bg-blue-500 hover:bg-blue-600"}`}
           >
-            {isLoading ? "翻译中..." : "翻译"}
+            {!redisReady ? "Redis 未就绪" : isLoading ? "翻译中..." : "翻译"}
           </button>
           <button
             onClick={handleClear}
