@@ -64,12 +64,23 @@ const TARGET_LANGUAGE_OPTIONS = [
   { value: "ko", label: "韩文" },
 ];
 
+const BASE_REASONING_OPTIONS = ["low", "medium", "high"] as const;
+type ReasoningEffort = (typeof BASE_REASONING_OPTIONS)[number] | "minimal";
+
+const REASONING_LABELS: Record<ReasoningEffort, string> = {
+  minimal: "极简",
+  low: "低",
+  medium: "中",
+  high: "高",
+};
+
 export default function Home() {
   const [sourceText, setSourceText] = useState("");
   const [targetText, setTargetText] = useState("");
   const [model, setModel] = useState<SupportedModel>(DEFAULT_MODEL);
   const [sourceLang, setSourceLang] = useState("auto");
   const [targetLang, setTargetLang] = useState("zh");
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("low");
   const [quota, setQuota] = useState<QuotaInfo | null>(null);
   const [quotaError, setQuotaError] = useState<string | null>(null);
   const [redisReady, setRedisReady] = useState(true);
@@ -81,8 +92,24 @@ export default function Home() {
   const [tokenEstimateError, setTokenEstimateError] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState<"idle" | "success" | "error">("idle");
   const copyResetTimerRef = useRef<number | null>(null);
+  const translationOutputRef = useRef<HTMLTextAreaElement | null>(null);
   const trimmedSourceText = useMemo(() => sourceText.trim(), [sourceText]);
   const [debouncedSourceText, setDebouncedSourceText] = useState(trimmedSourceText);
+
+  const availableReasoningEfforts = useMemo<ReasoningEffort[]>(() => {
+    if (model.startsWith("gpt-4.1")) {
+      return [];
+    }
+    if (model.startsWith("gpt-5")) {
+      return ["minimal", ...BASE_REASONING_OPTIONS] as ReasoningEffort[];
+    }
+    return [...BASE_REASONING_OPTIONS];
+  }, [model]);
+
+  const effectiveReasoningEffort = useMemo(
+    () => (availableReasoningEfforts.length > 0 ? reasoningEffort : undefined),
+    [availableReasoningEfforts, reasoningEffort],
+  );
 
   const fetchQuota = useCallback(async () => {
     try {
@@ -135,6 +162,19 @@ export default function Home() {
       window.clearTimeout(handler);
     };
   }, [trimmedSourceText]);
+
+  useEffect(() => {
+    if (availableReasoningEfforts.length === 0) {
+      if (reasoningEffort !== "low") {
+        setReasoningEffort("low");
+      }
+      return;
+    }
+
+    if (!availableReasoningEfforts.includes(reasoningEffort)) {
+      setReasoningEffort(availableReasoningEfforts[0]);
+    }
+  }, [availableReasoningEfforts, reasoningEffort]);
 
   useEffect(() => {
     if (!debouncedSourceText) {
@@ -260,16 +300,29 @@ export default function Home() {
     }
     setCopyStatus("idle");
 
+    if (typeof window !== "undefined") {
+      const isMobileViewport = window.matchMedia("(max-width: 640px)").matches;
+      if (isMobileViewport && translationOutputRef.current) {
+        translationOutputRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    }
+
     try {
+      const requestPayload: Record<string, unknown> = {
+        text: sourceText,
+        sourceLang,
+        targetLang,
+        model,
+      };
+
+      if (effectiveReasoningEffort) {
+        requestPayload.reasoningEffort = effectiveReasoningEffort;
+      }
+
       const response = await fetch("/api/translate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: sourceText,
-          sourceLang,
-          targetLang,
-          model,
-        }),
+        body: JSON.stringify(requestPayload),
       });
 
       if (!response.ok) {
@@ -462,7 +515,7 @@ export default function Home() {
     } finally {
       setIsLoading(false);
     }
-  }, [estimatedOverLimit, isEstimatingTokens, model, sourceLang, sourceText, targetLang, trimmedSourceText]);
+  }, [effectiveReasoningEffort, estimatedOverLimit, isEstimatingTokens, model, sourceLang, sourceText, targetLang, trimmedSourceText]);
 
   const handleClear = useCallback(() => {
     setSourceText("");
@@ -546,7 +599,7 @@ export default function Home() {
           )}
         </header>
 
-        <section className="flex flex-col gap-4 sm:flex-row sm:items-center">
+        <section className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-center">
           <div className="flex items-center gap-2">
             <label className="text-sm font-medium text-gray-700 dark:text-gray-300">模型</label>
             <select
@@ -588,6 +641,32 @@ export default function Home() {
                 </option>
               ))}
             </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">推理强度</label>
+              <select
+                value={effectiveReasoningEffort ?? "low"}
+                onChange={(event) => setReasoningEffort(event.target.value as ReasoningEffort)}
+                disabled={isLoading || !effectiveReasoningEffort}
+                className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1 text-sm shadow-sm focus:border-blue-500 dark:focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:focus:ring-blue-400 text-gray-900 dark:text-gray-100 disabled:bg-gray-100 disabled:text-gray-500 dark:disabled:bg-gray-800/60 dark:disabled:text-gray-500"
+              >
+                {availableReasoningEfforts.length > 0
+                  ? availableReasoningEfforts.map((effort) => (
+                    <option key={effort} value={effort}>
+                      {REASONING_LABELS[effort]}
+                    </option>
+                  ))
+                  : ["low" as ReasoningEffort].map((effort) => (
+                    <option key={effort} value={effort}>
+                      {REASONING_LABELS[effort]}
+                    </option>
+                  ))}
+              </select>
+            </div>
+            {availableReasoningEfforts.length === 0 && (
+              <p className="text-xs text-gray-500 dark:text-gray-400">GPT-4.1 系列不支持推理强度设置</p>
+            )}
           </div>
           {typeof lastUsageTokens === "number" && (
             <p className="text-sm text-gray-600 dark:text-gray-400">上次翻译消耗 {lastUsageTokens.toLocaleString("en-US")} tokens</p>

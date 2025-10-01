@@ -24,7 +24,12 @@ interface TranslatePayload {
 	sourceLang?: string;
 	targetLang?: string;
 	model?: string;
+	reasoningEffort?: string;
 }
+
+const BASE_REASONING_EFFORTS = ["low", "medium", "high"] as const;
+const GPT5_EXTRA_REASONING = ["minimal"] as const;
+type ReasoningEffort = typeof BASE_REASONING_EFFORTS[number] | typeof GPT5_EXTRA_REASONING[number];
 
 const globalForOpenAI = globalThis as unknown as {
 	__openAI?: OpenAI;
@@ -91,6 +96,25 @@ export async function POST(request: Request) {
 		}, { status: 400 });
 	}
 
+	const isGPT5Model = requestedModel.startsWith("gpt-5");
+	const isGPT41Model = requestedModel.startsWith("gpt-4.1");
+	const allowedEfforts: ReasoningEffort[] = isGPT41Model
+		? []
+		: (isGPT5Model ? [...BASE_REASONING_EFFORTS, ...GPT5_EXTRA_REASONING] : [...BASE_REASONING_EFFORTS]);
+
+	let reasoningEffort: ReasoningEffort | null = null;
+	if (!isGPT41Model) {
+		const requestedEffort = (payload.reasoningEffort ?? "low") as ReasoningEffort;
+		if (!allowedEfforts.includes(requestedEffort)) {
+			return NextResponse.json({
+				error: "invalid_reasoning_effort",
+				message: `当前模型仅支持以下推理强度: ${allowedEfforts.join(", ")}`,
+				supportedEfforts: allowedEfforts,
+			}, { status: 400 });
+		}
+		reasoningEffort = requestedEffort;
+	}
+
 	const sourceLang = payload.sourceLang || "auto";
 	const targetLang = payload.targetLang || "zh";
 	const prompt = buildTranslationPrompt(text, sourceLang, targetLang);
@@ -98,9 +122,8 @@ export async function POST(request: Request) {
 	let responseStream: Awaited<ReturnType<ReturnType<typeof getOpenAIClient>["responses"]["stream"]>>;
 	try {
 		const openai = getOpenAIClient();
-		responseStream = await openai.responses.stream({
+		const requestConfig: Parameters<typeof openai.responses.stream>[0] = {
 			model: requestedModel,
-			reasoning: { effort: "low", summary: null },
 			input: [
 				{
 					role: "system",
@@ -111,7 +134,13 @@ export async function POST(request: Request) {
 					content: prompt,
 				},
 			],
-		});
+		};
+
+		if (reasoningEffort) {
+			requestConfig.reasoning = { effort: reasoningEffort, summary: null };
+		}
+
+		responseStream = await openai.responses.stream(requestConfig);
 	} catch (error) {
 		if (error instanceof APIError) {
 			console.error("OpenAI API error", error.status, error.error);
