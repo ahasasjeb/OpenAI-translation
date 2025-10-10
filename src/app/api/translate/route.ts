@@ -197,9 +197,6 @@ export async function POST(request: Request) {
 							}
 							break;
 						}
-						case "response.output_text.done": {
-							break;
-						}
 						case "error": {
 							const errorEvent = event as { error?: { message?: string }; message?: string };
 							const message = errorEvent.error?.message ?? errorEvent.message ?? "调用 OpenAI API 失败";
@@ -207,9 +204,6 @@ export async function POST(request: Request) {
 							abortStream(message);
 							controller.close();
 							return;
-						}
-						default: {
-							break;
 						}
 					}
 				}
