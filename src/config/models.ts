@@ -4,7 +4,6 @@ export const SUPPORTED_MODELS = [
 	"gpt-4.1-mini",
 	"gpt-4.1-nano",
 	"gpt-4o-mini",
-	"o1-mini",
 	"o3-mini",
 	"o4-mini",
 ] as const;
@@ -19,7 +18,6 @@ export const MODEL_LABELS: Record<SupportedModel, string> = {
 	"gpt-4.1-mini": "GPT-4.1 Mini",
 	"gpt-4.1-nano": "GPT-4.1 Nano",
 	"gpt-4o-mini": "GPT-4o Mini",
-	"o1-mini": "O1 Mini",
 	"o3-mini": "O3 Mini",
 	"o4-mini": "O4 Mini",
 };
