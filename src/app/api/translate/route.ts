@@ -97,10 +97,9 @@ export async function POST(request: Request) {
 	}
 
 	const isGPT5Model = requestedModel.startsWith("gpt-5");
-	const isGPT41Model = requestedModel.startsWith("gpt-4.1");
 	const isO3Model = requestedModel.startsWith("o3-");
 	const isO4Model = requestedModel.startsWith("o4-");
-	const supportsReasoning = isGPT5Model || isGPT41Model || isO3Model || isO4Model;
+	const supportsReasoning = isGPT5Model || isO3Model || isO4Model;
 	const allowedEfforts: ReasoningEffort[] = supportsReasoning
 		? (isGPT5Model ? [...BASE_REASONING_EFFORTS, ...GPT5_EXTRA_REASONING] : [...BASE_REASONING_EFFORTS])
 		: [];
