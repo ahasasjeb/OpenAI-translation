@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { DEFAULT_MODEL, MODEL_LABELS, SUPPORTED_MODELS, type SupportedModel } from "@/config/models";
-import { estimateTranslationTokenUsage, fallbackCharacterEstimate } from "@/lib/tokenEstimator";
+import { estimateTranslationTokenUsage, fallbackCharacterEstimate, type ImageInput } from "@/lib/tokenEstimator";
+import { readImageFile } from "@/lib/imageUtils";
 
 const QUOTA_POLL_INTERVAL = 15_000;
 
@@ -91,8 +92,11 @@ export default function Home() {
   const [isEstimatingTokens, setIsEstimatingTokens] = useState(false);
   const [tokenEstimateError, setTokenEstimateError] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState<"idle" | "success" | "error">("idle");
+  const [uploadedImages, setUploadedImages] = useState<ImageInput[]>([]);
+  const [imageUploadError, setImageUploadError] = useState<string | null>(null);
   const copyResetTimerRef = useRef<number | null>(null);
   const translationOutputRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const trimmedSourceText = useMemo(() => sourceText.trim(), [sourceText]);
   const [debouncedSourceText, setDebouncedSourceText] = useState(trimmedSourceText);
 
@@ -177,7 +181,7 @@ export default function Home() {
   }, [availableReasoningEfforts, reasoningEffort]);
 
   useEffect(() => {
-    if (!debouncedSourceText) {
+    if (!debouncedSourceText && uploadedImages.length === 0) {
       setEstimatedTokens(0);
       setTokenEstimateError(null);
       setIsEstimatingTokens(false);
@@ -193,6 +197,7 @@ export default function Home() {
       model,
       sourceLang,
       targetLang,
+      images: uploadedImages.length > 0 ? uploadedImages : undefined,
     })
       .then((result) => {
         if (!active) return;
@@ -213,7 +218,7 @@ export default function Home() {
     return () => {
       active = false;
     };
-  }, [debouncedSourceText, model, sourceLang, targetLang]);
+  }, [debouncedSourceText, model, sourceLang, targetLang, uploadedImages]);
 
   useEffect(() => {
     const ref = copyResetTimerRef;
@@ -314,6 +319,10 @@ export default function Home() {
         targetLang,
         model,
       };
+
+      if (uploadedImages.length > 0) {
+        requestPayload.images = uploadedImages;
+      }
 
       if (effectiveReasoningEffort) {
         requestPayload.reasoningEffort = effectiveReasoningEffort;
@@ -515,7 +524,7 @@ export default function Home() {
     } finally {
       setIsLoading(false);
     }
-  }, [effectiveReasoningEffort, estimatedOverLimit, isEstimatingTokens, model, sourceLang, sourceText, targetLang, trimmedSourceText]);
+  }, [effectiveReasoningEffort, estimatedOverLimit, isEstimatingTokens, model, sourceLang, sourceText, targetLang, trimmedSourceText, uploadedImages]);
 
   const handleClear = useCallback(() => {
     setSourceText("");
@@ -524,6 +533,8 @@ export default function Home() {
     setLastUsageTokens(null);
     setEstimatedTokens(0);
     setTokenEstimateError(null);
+    setUploadedImages([]);
+    setImageUploadError(null);
     setCopyStatus("idle");
     if (copyResetTimerRef.current !== null) {
       window.clearTimeout(copyResetTimerRef.current);
@@ -552,6 +563,34 @@ export default function Home() {
       }, 2000);
     }
   }, [targetText]);
+
+  const handleImageUpload = useCallback(async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+
+    setImageUploadError(null);
+    const newImages: ImageInput[] = [];
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      try {
+        const imageInfo = await readImageFile(file);
+        newImages.push(imageInfo);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "图片上传失败";
+        setImageUploadError(message);
+        return;
+      }
+    }
+
+    setUploadedImages((prev) => [...prev, ...newImages]);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  }, []);
+
+  const handleRemoveImage = useCallback((index: number) => {
+    setUploadedImages((prev) => prev.filter((_, i) => i !== index));
+  }, []);
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-4">
@@ -684,6 +723,57 @@ export default function Home() {
             )}
           </section>
         )}
+
+        <section className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 shadow-sm">
+          <h2 className="mb-3 text-sm font-medium text-gray-700 dark:text-gray-300">图片上传（可选）</h2>
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept="image/png,image/jpeg,image/webp,image/gif"
+                onChange={(e) => handleImageUpload(e.target.files)}
+                disabled={isLoading}
+                className="flex-1 text-sm file:mr-4 file:rounded-md file:border-0 file:bg-blue-500 dark:file:bg-blue-600 file:px-4 file:py-2 file:text-white file:font-medium hover:file:bg-blue-600 dark:hover:file:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              />
+            </div>
+            {imageUploadError && (
+              <p className="text-xs text-red-600 dark:text-red-400">{imageUploadError}</p>
+            )}
+            {uploadedImages.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {uploadedImages.map((img, index) => (
+                  <div key={index} className="relative inline-block rounded-lg overflow-hidden border border-gray-300 dark:border-gray-600">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={`data:${img.mimeType};base64,${img.base64}`}
+                      alt={`uploaded-${index}`}
+                      className="h-16 w-16 object-cover"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveImage(index)}
+                      disabled={isLoading}
+                      className="absolute top-0 right-0 bg-red-500 dark:bg-red-600 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center opacity-0 hover:opacity-100 transition disabled:opacity-50"
+                      title="删除图片"
+                    >
+                      ×
+                    </button>
+                    <div className="absolute bottom-0 left-0 right-0 bg-black/50 px-1 text-xs text-white">
+                      {(img.width)}×{(img.height)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {uploadedImages.length > 0 && (
+              <div className="text-xs text-gray-600 dark:text-gray-400">
+                已上传 {uploadedImages.length} 张图片，Token 成本将在估算中显示
+              </div>
+            )}
+          </div>
+        </section>
 
         <section className="flex flex-col gap-4 sm:h-[600px] sm:flex-row">
           <div className="flex flex-col sm:flex-1">

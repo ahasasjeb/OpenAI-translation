@@ -25,6 +25,13 @@ interface TranslatePayload {
 	targetLang?: string;
 	model?: string;
 	reasoningEffort?: string;
+	images?: Array<{
+		base64: string;
+		mimeType: string;
+		width: number;
+		height: number;
+		detail?: 'low' | 'high' | 'auto';
+	}>;
 }
 
 const BASE_REASONING_EFFORTS = ["low", "medium", "high"] as const;
@@ -124,6 +131,12 @@ export async function POST(request: Request) {
 	let responseStream: Awaited<ReturnType<ReturnType<typeof getOpenAIClient>["responses"]["stream"]>>;
 	try {
 		const openai = getOpenAIClient();
+		
+		// If images are provided, log them for future vision support
+		if (payload.images && payload.images.length > 0) {
+			console.log(`[INFO] Received ${payload.images.length} images for translation. Current implementation uses text-only Responses API.`);
+		}
+
 		const requestConfig: Parameters<typeof openai.responses.stream>[0] = {
 			model: requestedModel,
 			input: [

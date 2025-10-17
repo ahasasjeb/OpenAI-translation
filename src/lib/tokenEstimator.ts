@@ -2,6 +2,7 @@
 
 import type { SupportedModel } from '@/config/models';
 import { buildTranslationPrompt, TRANSLATION_SYSTEM_PROMPT } from '@/config/prompt';
+import { calculateImageTokens } from '@/lib/imageUtils';
 import modelToEncoding from 'tiktoken/model_to_encoding.json';
 import { init, Tiktoken } from 'tiktoken/lite/init';
 import { load } from 'tiktoken/lite/load';
@@ -63,10 +64,19 @@ async function getEncoder(model: SupportedModel) {
 	return encoder;
 }
 
+export type ImageInput = {
+	base64: string;
+	mimeType: string;
+	width: number;
+	height: number;
+	detail?: 'low' | 'high' | 'auto';
+};
+
 export type TokenEstimate = {
 	systemTokens: number;
 	promptTokens: number;
 	sourceTokens: number;
+	imageTokens: number;
 	estimatedResponseTokens: number;
 	totalTokens: number;
 };
@@ -76,13 +86,15 @@ export async function estimateTranslationTokenUsage(params: {
 	model: SupportedModel;
 	sourceLang: string;
 	targetLang: string;
+	images?: ImageInput[];
 }): Promise<TokenEstimate> {
 	const trimmed = params.text.trim();
-	if (!trimmed) {
+	if (!trimmed && (!params.images || params.images.length === 0)) {
 		return {
 			systemTokens: 0,
 			promptTokens: 0,
 			sourceTokens: 0,
+			imageTokens: 0,
 			estimatedResponseTokens: 0,
 			totalTokens: 0,
 		};
@@ -92,19 +104,29 @@ export async function estimateTranslationTokenUsage(params: {
 	const systemTokens = encoder.encode(TRANSLATION_SYSTEM_PROMPT).length + CHAT_MESSAGE_OVERHEAD;
 	const promptBody = buildTranslationPrompt(trimmed, params.sourceLang, params.targetLang);
 	const promptTokens = encoder.encode(promptBody).length + CHAT_MESSAGE_OVERHEAD;
-	const sourceTokens = encoder.encode(trimmed).length;
+	const sourceTokens = trimmed ? encoder.encode(trimmed).length : 0;
+	
+	// 计算图片的token成本
+	let imageTokens = 0;
+	if (params.images && params.images.length > 0) {
+		for (const image of params.images) {
+			imageTokens += calculateImageTokens(image.width, image.height, image.detail);
+		}
+	}
+
 	const estimatedResponseTokens = Math.max(
 		MIN_RESPONSE_TOKENS,
-		Math.round(sourceTokens * RESPONSE_RATIO),
+		Math.round((sourceTokens || imageTokens) * RESPONSE_RATIO),
 		sourceTokens,
 	) + RESPONSE_OVERHEAD;
 
-	const totalTokens = systemTokens + promptTokens + estimatedResponseTokens;
+	const totalTokens = systemTokens + promptTokens + sourceTokens + imageTokens + estimatedResponseTokens;
 
 	return {
 		systemTokens,
 		promptTokens,
 		sourceTokens,
+		imageTokens,
 		estimatedResponseTokens,
 		totalTokens,
 	};
