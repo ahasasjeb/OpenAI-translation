@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import OpenAI, { APIError } from "openai";
 
 import { DEFAULT_MODEL, SUPPORTED_MODELS, type SupportedModel } from "@/config/models";
-import { TRANSLATION_SYSTEM_PROMPT, buildTranslationPrompt } from "@/config/prompt";
+import { TEXT_SYSTEM_PROMPT, IMAGE_SYSTEM_PROMPT, buildTranslationPrompt } from "@/config/prompt";
 import {
 	DAILY_TOKEN_LIMIT,
 	DailyQuotaExceededError,
@@ -126,15 +126,21 @@ export async function POST(request: Request) {
 
 	const sourceLang = payload.sourceLang || "auto";
 	const targetLang = payload.targetLang || "zh";
-	const prompt = buildTranslationPrompt(text, sourceLang, targetLang);
+	
+	// 判断是否为图片模式
+	const isImageMode = payload.images && payload.images.length > 0;
+	const prompt = buildTranslationPrompt(text, sourceLang, targetLang, isImageMode);
+	const systemPrompt = isImageMode ? IMAGE_SYSTEM_PROMPT : TEXT_SYSTEM_PROMPT;
 
 	let responseStream: Awaited<ReturnType<ReturnType<typeof getOpenAIClient>["responses"]["stream"]>>;
 	try {
 		const openai = getOpenAIClient();
 		
-		// If images are provided, log them for future vision support
-		if (payload.images && payload.images.length > 0) {
-			console.log(`[INFO] Received ${payload.images.length} images for translation. Current implementation uses text-only Responses API.`);
+		// Log image mode info
+		if (isImageMode) {
+			console.log(`[INFO] Image mode: Received ${payload.images!.length} image(s) for translation.`);
+		} else {
+			console.log(`[INFO] Text mode: Translating ${text.length} characters.`);
 		}
 
 		const requestConfig: Parameters<typeof openai.responses.stream>[0] = {
@@ -142,7 +148,7 @@ export async function POST(request: Request) {
 			input: [
 				{
 					role: "system",
-					content: TRANSLATION_SYSTEM_PROMPT,
+					content: systemPrompt,
 				},
 				{
 					role: "user",

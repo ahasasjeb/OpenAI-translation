@@ -92,13 +92,18 @@ export default function Home() {
   const [isEstimatingTokens, setIsEstimatingTokens] = useState(false);
   const [tokenEstimateError, setTokenEstimateError] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState<"idle" | "success" | "error">("idle");
-  const [uploadedImages, setUploadedImages] = useState<ImageInput[]>([]);
+  const [uploadedImage, setUploadedImage] = useState<ImageInput | null>(null);
   const [imageUploadError, setImageUploadError] = useState<string | null>(null);
   const copyResetTimerRef = useRef<number | null>(null);
   const translationOutputRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const trimmedSourceText = useMemo(() => sourceText.trim(), [sourceText]);
   const [debouncedSourceText, setDebouncedSourceText] = useState(trimmedSourceText);
+  
+  // 判断当前是图片模式还是文本模式
+  const isImageMode = uploadedImage !== null;
+  const isTextMode = trimmedSourceText.length > 0;
+  const hasConflict = isImageMode && isTextMode;
 
   const availableReasoningEfforts = useMemo<ReasoningEffort[]>(() => {
     if (model.startsWith("gpt-4.1")) {
@@ -181,7 +186,7 @@ export default function Home() {
   }, [availableReasoningEfforts, reasoningEffort]);
 
   useEffect(() => {
-    if (!debouncedSourceText && uploadedImages.length === 0) {
+    if (!debouncedSourceText && !uploadedImage) {
       setEstimatedTokens(0);
       setTokenEstimateError(null);
       setIsEstimatingTokens(false);
@@ -197,7 +202,7 @@ export default function Home() {
       model,
       sourceLang,
       targetLang,
-      images: uploadedImages.length > 0 ? uploadedImages : undefined,
+      images: uploadedImage ? [uploadedImage] : undefined,
     })
       .then((result) => {
         if (!active) return;
@@ -218,7 +223,7 @@ export default function Home() {
     return () => {
       active = false;
     };
-  }, [debouncedSourceText, model, sourceLang, targetLang, uploadedImages]);
+  }, [debouncedSourceText, model, sourceLang, targetLang, uploadedImage]);
 
   useEffect(() => {
     const ref = copyResetTimerRef;
@@ -256,11 +261,12 @@ export default function Home() {
   }, [quota, estimatedTokens]);
 
   const translateDisabled = isLoading
-    || !trimmedSourceText
+    || (!trimmedSourceText && !uploadedImage)
     || quotaExceeded
     || !redisReady
     || estimatedOverLimit
-    || isEstimatingTokens;
+    || isEstimatingTokens
+    || hasConflict;
 
   const translateButtonLabel = !redisReady
     ? "Redis 未就绪"
@@ -280,8 +286,13 @@ export default function Home() {
     : `预计本次请求将消耗 ${estimatedTokensDisplay} tokens${estimatedRemainingDisplay != null ? `，剩余 ${estimatedRemainingDisplay}` : ""}`;
 
   const handleTranslate = useCallback(async () => {
-    if (!trimmedSourceText) {
-      setError("请输入需要翻译的文本");
+    if (!trimmedSourceText && !uploadedImage) {
+      setError(isImageMode ? "请上传图片" : "请输入需要翻译的文本");
+      return;
+    }
+
+    if (hasConflict) {
+      setError("请不要同时输入文本和上传图片，两者只能选其一");
       return;
     }
 
@@ -320,8 +331,8 @@ export default function Home() {
         model,
       };
 
-      if (uploadedImages.length > 0) {
-        requestPayload.images = uploadedImages;
+      if (uploadedImage) {
+        requestPayload.images = [uploadedImage];
       }
 
       if (effectiveReasoningEffort) {
@@ -524,7 +535,7 @@ export default function Home() {
     } finally {
       setIsLoading(false);
     }
-  }, [effectiveReasoningEffort, estimatedOverLimit, isEstimatingTokens, model, sourceLang, sourceText, targetLang, trimmedSourceText, uploadedImages]);
+  }, [effectiveReasoningEffort, estimatedOverLimit, isEstimatingTokens, model, sourceLang, sourceText, targetLang, trimmedSourceText, uploadedImage, hasConflict, isImageMode]);
 
   const handleClear = useCallback(() => {
     setSourceText("");
@@ -533,7 +544,7 @@ export default function Home() {
     setLastUsageTokens(null);
     setEstimatedTokens(0);
     setTokenEstimateError(null);
-    setUploadedImages([]);
+    setUploadedImage(null);
     setImageUploadError(null);
     setCopyStatus("idle");
     if (copyResetTimerRef.current !== null) {
@@ -567,29 +578,32 @@ export default function Home() {
   const handleImageUpload = useCallback(async (files: FileList | null) => {
     if (!files || files.length === 0) return;
 
-    setImageUploadError(null);
-    const newImages: ImageInput[] = [];
-
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      try {
-        const imageInfo = await readImageFile(file);
-        newImages.push(imageInfo);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "图片上传失败";
-        setImageUploadError(message);
-        return;
-      }
+    // 清除之前的文本，确保互斥
+    if (sourceText.trim().length > 0) {
+      setError("已清除之前的文本。请只选择图片翻译或文本翻译其中之一。");
+      setSourceText("");
     }
 
-    setUploadedImages((prev) => [...prev, ...newImages]);
+    setImageUploadError(null);
+
+    try {
+      const file = files[0]; // 只接受第一张图片
+      const imageInfo = await readImageFile(file);
+      setUploadedImage(imageInfo);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "图片上传失败";
+      setImageUploadError(message);
+      setUploadedImage(null);
+    }
+
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
-  }, []);
+  }, [sourceText]);
 
-  const handleRemoveImage = useCallback((index: number) => {
-    setUploadedImages((prev) => prev.filter((_, i) => i !== index));
+  const handleRemoveImage = useCallback(() => {
+    setUploadedImage(null);
+    setImageUploadError(null);
   }, []);
 
   return (
@@ -726,6 +740,9 @@ export default function Home() {
 
         <section className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 shadow-sm">
           <h2 className="mb-3 text-sm font-medium text-gray-700 dark:text-gray-300">图片上传（可选）</h2>
+          <p className="mb-3 text-xs text-gray-600 dark:text-gray-400">
+            ⚠️ 注意：图片翻译功能目前已可以上传，Token 成本也会计算，但使用 Responses API 需要后续接入 Vision API 才能真正翻译图片内容。目前可用作测试 Token 计算。
+          </p>
           <div className="flex flex-col gap-3">
             <div className="flex items-center gap-2">
               <input
@@ -741,36 +758,34 @@ export default function Home() {
             {imageUploadError && (
               <p className="text-xs text-red-600 dark:text-red-400">{imageUploadError}</p>
             )}
-            {uploadedImages.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {uploadedImages.map((img, index) => (
-                  <div key={index} className="relative inline-block rounded-lg overflow-hidden border border-gray-300 dark:border-gray-600">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={`data:${img.mimeType};base64,${img.base64}`}
-                      alt={`uploaded-${index}`}
-                      className="h-16 w-16 object-cover"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveImage(index)}
-                      disabled={isLoading}
-                      className="absolute top-0 right-0 bg-red-500 dark:bg-red-600 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center opacity-0 hover:opacity-100 transition disabled:opacity-50"
-                      title="删除图片"
-                    >
-                      ×
-                    </button>
-                    <div className="absolute bottom-0 left-0 right-0 bg-black/50 px-1 text-xs text-white">
-                      {(img.width)}×{(img.height)}
-                    </div>
+            {uploadedImage && (
+              <div className="flex items-center gap-2">
+                <div className="relative inline-block rounded-lg overflow-hidden border border-gray-300 dark:border-gray-600">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={`data:${uploadedImage.mimeType};base64,${uploadedImage.base64}`}
+                    alt="uploaded"
+                    className="h-20 w-20 object-cover"
+                  />
+                  <div className="absolute bottom-0 left-0 right-0 bg-black/50 px-1 text-xs text-white">
+                    {uploadedImage.width}×{uploadedImage.height}
                   </div>
-                ))}
+                </div>
+                <div className="flex flex-col gap-2">
+                  <p className="text-xs text-gray-600 dark:text-gray-400">已上传图片</p>
+                  <button
+                    type="button"
+                    onClick={handleRemoveImage}
+                    disabled={isLoading}
+                    className="text-xs bg-red-500 dark:bg-red-600 text-white px-3 py-1 rounded hover:bg-red-600 dark:hover:bg-red-700 disabled:opacity-50"
+                  >
+                    删除
+                  </button>
+                </div>
               </div>
             )}
-            {uploadedImages.length > 0 && (
-              <div className="text-xs text-gray-600 dark:text-gray-400">
-                已上传 {uploadedImages.length} 张图片，Token 成本将在估算中显示
-              </div>
+            {!uploadedImage && (
+              <p className="text-xs text-gray-500 dark:text-gray-400">（只可上传一张图片。如需翻译文本，请清空后重新输入）</p>
             )}
           </div>
         </section>
@@ -783,8 +798,16 @@ export default function Home() {
             <div className="relative flex-1">
               <textarea
                 value={sourceText}
-                onChange={(event) => setSourceText(event.target.value)}
-                placeholder="输入要翻译的文本..."
+                onChange={(event) => {
+                  const newText = event.target.value;
+                  setSourceText(newText);
+                  // 当用户输入文本时，自动清除已上传的图片
+                  if (newText.trim().length > 0 && uploadedImage) {
+                    setUploadedImage(null);
+                    setImageUploadError(null);
+                  }
+                }}
+                placeholder={uploadedImage ? "（已上传图片，无法输入文本）" : "输入要翻译的文本..."}
                 className="min-h-[45vh] w-full flex-1 resize-none rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-4 pr-32 text-sm shadow-sm transition focus:border-blue-500 dark:focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-200 dark:focus:ring-blue-800 text-gray-900 dark:text-gray-100 sm:h-full sm:min-h-0"
               />
               <button
