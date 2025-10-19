@@ -124,6 +124,7 @@ export async function POST(request: Request) {
 
 	const sourceLang = payload.sourceLang || "auto";
 	const targetLang = payload.targetLang || "zh";
+	const isImageRequest = hasImage;
 	const prompt = hasText ? buildTranslationPrompt(text, sourceLang, targetLang) : buildImageTranslationInstruction(sourceLang, targetLang);
 
 	let responseStream: Awaited<ReturnType<ReturnType<typeof getOpenAIClient>["responses"]["stream"]>>;
@@ -187,6 +188,7 @@ export async function POST(request: Request) {
 			};
 
 			let aggregated = "";
+			let imageJsonBuffer = "";
 			const abortStream = (reason?: string) => {
 				try {
 					responseStream.controller.abort(reason);
@@ -202,7 +204,11 @@ export async function POST(request: Request) {
 							const delta = event.delta ?? "";
 							if (delta) {
 								aggregated += delta;
-								sendEvent("delta", { delta });
+								if (isImageRequest) {
+									imageJsonBuffer += delta;
+								} else {
+									sendEvent("delta", { delta });
+								}
 							}
 							break;
 						}
@@ -218,14 +224,37 @@ export async function POST(request: Request) {
 				}
 
 				const finalResponse = await responseStream.finalResponse();
-				const output = (aggregated || finalResponse.output_text || "").trim();
-				if (!output) {
+				const rawOutput = (aggregated || finalResponse.output_text || "").trim();
+				if (!rawOutput) {
 					sendEvent("error", {
 						code: "empty_translation",
 						message: "未能获取翻译结果，请稍后重试",
 					});
 					controller.close();
 					return;
+				}
+
+				let output = rawOutput;
+				let noTextInImage = false;
+				if (isImageRequest) {
+					try {
+						const json = JSON.parse(imageJsonBuffer || rawOutput) as {
+							hasText?: boolean;
+							text?: string;
+							detectedLanguage?: string;
+							reason?: string;
+						};
+						if (json && typeof json === "object" && typeof json.hasText === "boolean") {
+							if (json.hasText) {
+								output = (json.text ?? "").trim();
+							} else {
+								noTextInImage = true;
+								output = "";
+							}
+						}
+					} catch {
+						// JSON 解析失败则退回直接输出
+					}
 				}
 
 				const tokensUsed = normaliseUsage(finalResponse.usage, text, output);
@@ -235,6 +264,16 @@ export async function POST(request: Request) {
 						model: requestedModel,
 						timestamp: new Date(),
 					});
+
+					if (noTextInImage) {
+						sendEvent("error", {
+							code: "no_text_in_image",
+							message: "图片中未检测到可读文字",
+							quota: augmentQuota(quota),
+						});
+						controller.close();
+						return;
+					}
 
 					sendEvent("final", {
 						translation: output,

@@ -16,9 +16,15 @@ export function buildTranslationPrompt(text: string, source: string, target: str
 export function buildImageTranslationInstruction(source: string, target: string) {
 	const sourceLabel = source === "auto" ? "auto-detect" : source;
 	return [
-		`Extract and translate all readable text from the image from ${sourceLabel} to ${target}.`,
-		"Only output the translated text with original line breaks and layout if possible.",
+		`Extract all readable text from the image and translate from ${sourceLabel} to ${target}.`,
 		"Do not describe the image or add explanations.",
+		"Return ONLY a minified JSON object (no code fences, no trailing text) with the exact shape:",
+		'{"hasText": boolean, "text": string, "detectedLanguage": string, "reason"?: string}',
+		"Rules:",
+		"- If there is no readable text, set hasText to false, text to an empty string, include a brief 'reason'.",
+		"- If there is readable text, set hasText to true and 'text' to the translated content preserving line breaks.",
+		"- detectedLanguage should indicate the language of the original text if determinable, otherwise 'unknown'.",
+		"- Output must be a single JSON object with double-quoted keys and string values, UTF-8, no comments, no markdown, no extra text.",
 	].join("\n");
 }
    
