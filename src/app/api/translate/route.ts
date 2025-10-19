@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import OpenAI, { APIError } from "openai";
 
 import { DEFAULT_MODEL, SUPPORTED_MODELS, type SupportedModel } from "@/config/models";
-import { TRANSLATION_SYSTEM_PROMPT, buildTranslationPrompt } from "@/config/prompt";
+import { TRANSLATION_SYSTEM_PROMPT, buildTranslationPrompt, buildImageTranslationInstruction } from "@/config/prompt";
 import {
 	DAILY_TOKEN_LIMIT,
 	DailyQuotaExceededError,
@@ -25,6 +25,8 @@ interface TranslatePayload {
 	targetLang?: string;
 	model?: string;
 	reasoningEffort?: string;
+	imageDataUrl?: string; // data:image/...;base64,xxxx 仅支持单张
+	imageDetail?: "low" | "high" | "auto";
 }
 
 const BASE_REASONING_EFFORTS = ["low", "medium", "high"] as const;
@@ -80,10 +82,13 @@ export async function POST(request: Request) {
 	}
 
 	const text = (payload.text ?? "").trim();
-	if (!text) {
+	const imageDataUrl = (payload.imageDataUrl ?? "").trim();
+	const hasText = !!text;
+	const hasImage = !!imageDataUrl;
+	if ((hasText && hasImage) || (!hasText && !hasImage)) {
 		return NextResponse.json({
-			error: "empty_text",
-			message: "请输入需要翻译的文本",
+			error: "invalid_input",
+			message: "请提供文本或图片（二选一），且一次仅支持一张图片",
 		}, { status: 400 });
 	}
 
@@ -119,22 +124,27 @@ export async function POST(request: Request) {
 
 	const sourceLang = payload.sourceLang || "auto";
 	const targetLang = payload.targetLang || "zh";
-	const prompt = buildTranslationPrompt(text, sourceLang, targetLang);
+	const prompt = hasText ? buildTranslationPrompt(text, sourceLang, targetLang) : buildImageTranslationInstruction(sourceLang, targetLang);
 
 	let responseStream: Awaited<ReturnType<ReturnType<typeof getOpenAIClient>["responses"]["stream"]>>;
 	try {
 		const openai = getOpenAIClient();
-		const requestConfig: Parameters<typeof openai.responses.stream>[0] = {
+		const userContent = hasImage
+			? [
+				{ type: "input_text", text: prompt },
+				{ type: "input_image", image_url: imageDataUrl, detail: payload.imageDetail ?? "high" },
+			  ]
+			: [
+				{ type: "input_text", text: prompt },
+			  ];
+
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const requestConfig: any = {
 			model: requestedModel,
 			input: [
-				{
-					role: "system",
-					content: TRANSLATION_SYSTEM_PROMPT,
-				},
-				{
-					role: "user",
-					content: prompt,
-				},
+				{ role: "system", content: TRANSLATION_SYSTEM_PROMPT },
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				{ role: "user", content: userContent as any },
 			],
 		};
 

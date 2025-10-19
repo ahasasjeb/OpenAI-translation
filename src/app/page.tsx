@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import NextImage from "next/image";
 
 import { DEFAULT_MODEL, MODEL_LABELS, SUPPORTED_MODELS, type SupportedModel } from "@/config/models";
 import { estimateTranslationTokenUsage, fallbackCharacterEstimate } from "@/lib/tokenEstimator";
@@ -77,6 +78,8 @@ const REASONING_LABELS: Record<ReasoningEffort, string> = {
 export default function Home() {
   const [sourceText, setSourceText] = useState("");
   const [targetText, setTargetText] = useState("");
+  const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
+  const [imageInfo, setImageInfo] = useState<{ width: number; height: number; type: string } | null>(null);
   const [model, setModel] = useState<SupportedModel>(DEFAULT_MODEL);
   const [sourceLang, setSourceLang] = useState("auto");
   const [targetLang, setTargetLang] = useState("zh");
@@ -95,6 +98,8 @@ export default function Home() {
   const translationOutputRef = useRef<HTMLTextAreaElement | null>(null);
   const trimmedSourceText = useMemo(() => sourceText.trim(), [sourceText]);
   const [debouncedSourceText, setDebouncedSourceText] = useState(trimmedSourceText);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const isImageMode = !!imageDataUrl && !!imageInfo;
 
   const availableReasoningEfforts = useMemo<ReasoningEffort[]>(() => {
     if (model.startsWith("gpt-4.1")) {
@@ -177,13 +182,47 @@ export default function Home() {
   }, [availableReasoningEfforts, reasoningEffort]);
 
   useEffect(() => {
-    if (!debouncedSourceText) {
+    // 估算 tokens：文本或图片二选一
+    if (!isImageMode && !debouncedSourceText) {
       setEstimatedTokens(0);
       setTokenEstimateError(null);
       setIsEstimatingTokens(false);
       return;
     }
 
+    if (isImageMode && imageInfo) {
+      let active = true;
+      setIsEstimatingTokens(true);
+      setTokenEstimateError(null);
+
+      estimateTranslationTokenUsage({
+        image: { width: imageInfo.width, height: imageInfo.height, detail: "high" },
+        model,
+        sourceLang,
+        targetLang,
+      })
+        .then((result) => {
+          if (!active) return;
+          setEstimatedTokens(result.totalTokens);
+          setTokenEstimateError(null);
+        })
+        .catch((err) => {
+          if (!active) return;
+          console.error("Token estimation failed", err);
+          setTokenEstimateError("Token 预估失败");
+          setEstimatedTokens(0);
+        })
+        .finally(() => {
+          if (!active) return;
+          setIsEstimatingTokens(false);
+        });
+
+      return () => {
+        active = false;
+      };
+    }
+
+    // 文本模式
     let active = true;
     setIsEstimatingTokens(true);
     setTokenEstimateError(null);
@@ -213,7 +252,7 @@ export default function Home() {
     return () => {
       active = false;
     };
-  }, [debouncedSourceText, model, sourceLang, targetLang]);
+  }, [debouncedSourceText, isImageMode, imageInfo, model, sourceLang, targetLang]);
 
   useEffect(() => {
     const ref = copyResetTimerRef;
@@ -250,8 +289,9 @@ export default function Home() {
     return quota.remaining - estimatedTokens;
   }, [quota, estimatedTokens]);
 
+  const hasInput = isImageMode || !!trimmedSourceText;
   const translateDisabled = isLoading
-    || !trimmedSourceText
+    || !hasInput
     || quotaExceeded
     || !redisReady
     || estimatedOverLimit
@@ -275,8 +315,8 @@ export default function Home() {
     : `预计本次请求将消耗 ${estimatedTokensDisplay} tokens${estimatedRemainingDisplay != null ? `，剩余 ${estimatedRemainingDisplay}` : ""}`;
 
   const handleTranslate = useCallback(async () => {
-    if (!trimmedSourceText) {
-      setError("请输入需要翻译的文本");
+    if (!isImageMode && !trimmedSourceText) {
+      setError("请输入需要翻译的文本或选择图片");
       return;
     }
 
@@ -309,11 +349,17 @@ export default function Home() {
 
     try {
       const requestPayload: Record<string, unknown> = {
-        text: sourceText,
         sourceLang,
         targetLang,
         model,
       };
+
+      if (isImageMode && imageDataUrl) {
+        requestPayload.imageDataUrl = imageDataUrl;
+        requestPayload.imageDetail = "high";
+      } else {
+        requestPayload.text = sourceText;
+      }
 
       if (effectiveReasoningEffort) {
         requestPayload.reasoningEffort = effectiveReasoningEffort;
@@ -515,11 +561,13 @@ export default function Home() {
     } finally {
       setIsLoading(false);
     }
-  }, [effectiveReasoningEffort, estimatedOverLimit, isEstimatingTokens, model, sourceLang, sourceText, targetLang, trimmedSourceText]);
+  }, [effectiveReasoningEffort, estimatedOverLimit, imageDataUrl, isEstimatingTokens, isImageMode, model, sourceLang, sourceText, targetLang, trimmedSourceText]);
 
   const handleClear = useCallback(() => {
     setSourceText("");
     setTargetText("");
+    setImageDataUrl(null);
+    setImageInfo(null);
     setError(null);
     setLastUsageTokens(null);
     setEstimatedTokens(0);
@@ -673,7 +721,7 @@ export default function Home() {
           )}
         </section>
 
-        {trimmedSourceText && (
+        {(trimmedSourceText || isImageMode) && (
           <section className={`rounded-lg border p-3 text-sm ${estimateBannerClass}`}>
             <p>{estimateMessage}</p>
             {tokenEstimateError && (
@@ -688,15 +736,76 @@ export default function Home() {
         <section className="flex flex-col gap-4 sm:h-[600px] sm:flex-row">
           <div className="flex flex-col sm:flex-1">
             <div className="mb-2 flex items-center justify-between">
-              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">原文</span>
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">原文（文本或图片二选一）</span>
+              <div className="flex items-center gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    if (!file.type.startsWith("image/")) {
+                      setError("仅支持图片文件");
+                      return;
+                    }
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                      const dataUrl = String(reader.result);
+                      const img = new Image();
+                      img.onload = () => {
+                        setImageDataUrl(dataUrl);
+                        setImageInfo({ width: img.naturalWidth || img.width, height: img.naturalHeight || img.height, type: file.type });
+                        setSourceText("");
+                      };
+                      img.onerror = () => {
+                        setError("图片加载失败，请重试");
+                      };
+                      img.src = dataUrl;
+                    };
+                    reader.onerror = () => setError("读取图片失败");
+                    reader.readAsDataURL(file);
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isLoading}
+                  className="rounded-md border border-gray-300 dark:border-gray-600 px-3 py-1 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-60"
+                >
+                  选择图片
+                </button>
+                {isImageMode && (
+                  <button
+                    type="button"
+                    onClick={() => { setImageDataUrl(null); setImageInfo(null); }}
+                    disabled={isLoading}
+                    className="rounded-md border border-red-300 dark:border-red-600 px-3 py-1 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
+                  >
+                    移除图片
+                  </button>
+                )}
+              </div>
             </div>
             <div className="relative flex-1">
-              <textarea
-                value={sourceText}
-                onChange={(event) => setSourceText(event.target.value)}
-                placeholder="输入要翻译的文本..."
-                className="min-h-[45vh] w-full flex-1 resize-none rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-4 pr-32 text-sm shadow-sm transition focus:border-blue-500 dark:focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-200 dark:focus:ring-blue-800 text-gray-900 dark:text-gray-100 sm:h-full sm:min-h-0"
-              />
+              {!isImageMode ? (
+                <textarea
+                  value={sourceText}
+                  onChange={(event) => setSourceText(event.target.value)}
+                  placeholder="输入要翻译的文本... 或点击右上方选择图片"
+                  className="min-h-[45vh] w-full flex-1 resize-none rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-4 pr-32 text-sm shadow-sm transition focus:border-blue-500 dark:focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-200 dark:focus:ring-blue-800 text-gray-900 dark:text-gray-100 sm:h-full sm:min-h-0"
+                />
+              ) : (
+                <div className="min-h-[45vh] sm:h-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-3 pr-32">
+                  {imageDataUrl && imageInfo && (
+                    <NextImage src={imageDataUrl} alt="待翻译图片" width={imageInfo.width} height={imageInfo.height} unoptimized className="max-h-[70vh] max-w-full h-auto w-auto rounded" />
+                  )}
+                  {imageInfo && (
+                    <p className="mt-2 text-xs text-gray-600 dark:text-gray-400">尺寸：{imageInfo.width}×{imageInfo.height}，类型：{imageInfo.type}</p>
+                  )}
+                </div>
+              )}
               <button
                 type="button"
                 onClick={handleTranslate}
@@ -724,6 +833,7 @@ export default function Home() {
               value={targetText}
               readOnly
               placeholder="翻译结果将显示在这里..."
+              ref={translationOutputRef}
               className="min-h-[40vh] w-full flex-1 resize-none rounded-lg border border-gray-300 dark:border-gray-600 bg-gray-100 dark:bg-gray-700 p-4 text-sm shadow-sm focus:outline-none text-gray-900 dark:text-gray-100 sm:h-full sm:min-h-0"
             />
             {copyStatus === "success" && (
