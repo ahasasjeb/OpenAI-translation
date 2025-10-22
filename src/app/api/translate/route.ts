@@ -20,7 +20,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 interface TranslatePayload {
-	text: string;
+	text?: string;
 	sourceLang?: string;
 	targetLang?: string;
 	model?: string;
@@ -81,8 +81,8 @@ export async function POST(request: Request) {
 		}, { status: 400 });
 	}
 
-	const text = (payload.text ?? "").trim();
-	const imageDataUrl = (payload.imageDataUrl ?? "").trim();
+	const text = typeof payload.text === "string" ? payload.text.trim() : "";
+	const imageDataUrl = typeof payload.imageDataUrl === "string" ? payload.imageDataUrl.trim() : "";
 	const hasText = !!text;
 	const hasImage = !!imageDataUrl;
 	if ((hasText && hasImage) || (!hasText && !hasImage)) {
@@ -92,7 +92,8 @@ export async function POST(request: Request) {
 		}, { status: 400 });
 	}
 
-	const requestedModel = (payload.model ?? DEFAULT_MODEL) as SupportedModel;
+	const modelInput = typeof payload.model === "string" ? payload.model.trim() : DEFAULT_MODEL;
+	const requestedModel = modelInput as SupportedModel;
 	if (!SUPPORTED_MODELS.includes(requestedModel)) {
 		return NextResponse.json({
 			error: "unsupported_model",
