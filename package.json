@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "bun --bun next dev --turbopack",
+    "dev": "next dev --turbopack",
     "build": "next build --turbopack",
-    "start": "bun --bun next start",
+    "start": "next start",
     "lint": "eslint"
   },
   "dependencies": {
