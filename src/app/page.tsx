@@ -97,10 +97,11 @@ export default function Home() {
   const copyResetTimerRef = useRef<number | null>(null);
   const translationOutputRef = useRef<HTMLTextAreaElement | null>(null);
   const trimmedSourceText = useMemo(() => sourceText.trim(), [sourceText]);
-  const [debouncedSourceText, setDebouncedSourceText] = useState(trimmedSourceText);
+  
   const [customInstruction, setCustomInstruction] = useState("");
   const trimmedInstruction = useMemo(() => customInstruction.trim(), [customInstruction]);
-  const [debouncedInstruction, setDebouncedInstruction] = useState(trimmedInstruction);
+  const debouncedSourceText = useDebounced(trimmedSourceText, 300);
+  const debouncedInstruction = useDebounced(trimmedInstruction, 300);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const isImageMode = !!imageDataUrl && !!imageInfo;
 
@@ -156,98 +157,33 @@ export default function Home() {
     return () => clearInterval(id);
   }, [fetchQuota]);
 
-  useEffect(() => {
-    if (!trimmedSourceText) {
-      setDebouncedSourceText("");
-      return;
-    }
+  
 
-    const handler = window.setTimeout(() => {
-      setDebouncedSourceText(trimmedSourceText);
-    }, 300);
-
-    return () => {
-      window.clearTimeout(handler);
-    };
-  }, [trimmedSourceText]);
+  
 
   useEffect(() => {
-    const handler = window.setTimeout(() => {
-      setDebouncedInstruction(trimmedInstruction);
-    }, 300);
-
-    return () => {
-      window.clearTimeout(handler);
-    };
-  }, [trimmedInstruction]);
-
-  useEffect(() => {
-    if (availableReasoningEfforts.length === 0) {
-      if (reasoningEffort !== "low") {
-        setReasoningEffort("low");
-      }
-      return;
-    }
-
-    if (!availableReasoningEfforts.includes(reasoningEffort)) {
-      setReasoningEffort(availableReasoningEfforts[0]);
-    }
-  }, [availableReasoningEfforts, reasoningEffort]);
-
-  useEffect(() => {
-    // 估算 tokens：文本或图片二选一
-    if (!isImageMode && !debouncedSourceText) {
+    const hasText = !isImageMode && !!debouncedSourceText;
+    if (!isImageMode && !hasText) {
       setEstimatedTokens(0);
       setTokenEstimateError(null);
       setIsEstimatingTokens(false);
       return;
     }
-
-    if (isImageMode && imageInfo) {
-      let active = true;
-      setIsEstimatingTokens(true);
-      setTokenEstimateError(null);
-
-      estimateTranslationTokenUsage({
-        image: { width: imageInfo.width, height: imageInfo.height, detail: "high" },
-        model,
-        sourceLang,
-        targetLang,
-        instructions: debouncedInstruction,
-      })
-        .then((result) => {
-          if (!active) return;
-          setEstimatedTokens(result.totalTokens);
-          setTokenEstimateError(null);
-        })
-        .catch((err) => {
-          if (!active) return;
-          console.error("Token estimation failed", err);
-          setTokenEstimateError("Token 预估失败");
-          setEstimatedTokens(0);
-        })
-        .finally(() => {
-          if (!active) return;
-          setIsEstimatingTokens(false);
-        });
-
-      return () => {
-        active = false;
-      };
-    }
-
-    // 文本模式
     let active = true;
     setIsEstimatingTokens(true);
     setTokenEstimateError(null);
-
-    estimateTranslationTokenUsage({
-      text: debouncedSourceText,
+    const params: Record<string, unknown> = {
       model,
       sourceLang,
       targetLang,
       instructions: debouncedInstruction,
-    })
+    };
+    if (isImageMode && imageInfo) {
+      params.image = { width: imageInfo.width, height: imageInfo.height, detail: "high" };
+    } else if (hasText) {
+      params.text = debouncedSourceText;
+    }
+    estimateTranslationTokenUsage(params as any)
       .then((result) => {
         if (!active) return;
         setEstimatedTokens(result.totalTokens);
@@ -256,15 +192,19 @@ export default function Home() {
       .catch((err) => {
         if (!active) return;
         console.error("Token estimation failed", err);
-        setTokenEstimateError("Token 预估失败，已使用字符数近似估算");
-        const fallbackBasis = [debouncedSourceText, debouncedInstruction].filter(Boolean).join("\n");
-        setEstimatedTokens(fallbackCharacterEstimate(fallbackBasis));
+        if ((params as any).text) {
+          setTokenEstimateError("Token 预估失败，已使用字符数近似估算");
+          const fallbackBasis = [debouncedSourceText, debouncedInstruction].filter(Boolean).join("\n");
+          setEstimatedTokens(fallbackCharacterEstimate(fallbackBasis));
+        } else {
+          setTokenEstimateError("Token 预估失败");
+          setEstimatedTokens(0);
+        }
       })
       .finally(() => {
         if (!active) return;
         setIsEstimatingTokens(false);
       });
-
     return () => {
       active = false;
     };
@@ -508,50 +448,27 @@ export default function Home() {
         }
       };
 
-      const flushEvents = () => {
-        while (!shouldStop) {
-          const doubleNewlineIndex = (() => {
-            const idxRR = buffer.indexOf("\r\n\r\n");
-            const idxNN = buffer.indexOf("\n\n");
-            if (idxRR === -1) {
-              return idxNN;
-            }
-            if (idxNN === -1) {
-              return idxRR;
-            }
-            return Math.min(idxRR, idxNN);
-          })();
-
-          if (doubleNewlineIndex === -1) {
-            break;
-          }
-
-          const separator = buffer.startsWith("\r\n", doubleNewlineIndex) ? "\r\n\r\n" : "\n\n";
-          const rawEvent = buffer.slice(0, doubleNewlineIndex);
-          buffer = buffer.slice(doubleNewlineIndex + separator.length);
-          if (rawEvent.trim()) {
-            processEvent(rawEvent);
-          }
-          if (shouldStop) {
-            break;
-          }
-        }
-      };
-
       while (!shouldStop) {
         const { value, done } = await reader.read();
         if (done) {
           break;
         }
-        buffer += decoder.decode(value, { stream: true });
-        flushEvents();
+        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+        let idx = buffer.indexOf("\n\n");
+        while (idx !== -1 && !shouldStop) {
+          const rawEvent = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          if (rawEvent.trim()) {
+            processEvent(rawEvent);
+          }
+          idx = buffer.indexOf("\n\n");
+        }
       }
-
       if (!shouldStop) {
-        buffer += decoder.decode();
-        flushEvents();
-        if (!shouldStop && buffer.trim()) {
-          processEvent(buffer.trim());
+        buffer += decoder.decode().replace(/\r\n/g, "\n");
+        const trimmed = buffer.trim();
+        if (trimmed) {
+          processEvent(trimmed);
         }
       }
 
@@ -587,7 +504,6 @@ export default function Home() {
     setSourceText("");
     setTargetText("");
     setCustomInstruction("");
-    setDebouncedInstruction("");
     setImageDataUrl(null);
     setImageInfo(null);
     setError(null);
@@ -910,4 +826,17 @@ function formatBeijingTime(iso: string) {
     console.error("Failed to format Beijing time", error);
     return iso;
   }
+}
+
+function useDebounced(value: string, delay: number) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      setDebounced(value);
+    }, delay);
+    return () => {
+      window.clearTimeout(id);
+    };
+  }, [value, delay]);
+  return debounced;
 }
