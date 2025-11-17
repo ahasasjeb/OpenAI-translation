@@ -1,7 +1,7 @@
 'use client';
 
 import type { SupportedModel } from '@/config/models';
-import { buildTranslationPrompt, TRANSLATION_SYSTEM_PROMPT } from '@/config/prompt';
+import { buildImageTranslationInstruction, buildTranslationPrompt, TRANSLATION_SYSTEM_PROMPT } from '@/config/prompt';
 import modelToEncoding from 'tiktoken/model_to_encoding.json';
 import { init, Tiktoken } from 'tiktoken/lite/init';
 import { load } from 'tiktoken/lite/load';
@@ -77,13 +77,15 @@ export async function estimateTranslationTokenUsage(params: {
 	model: SupportedModel;
 	sourceLang: string;
 	targetLang: string;
+	instructions?: string;
 }): Promise<TokenEstimate> {
 	const isImage = !!params.image;
 	const encoder = await getEncoder(params.model);
 	const systemTokens = encoder.encode(TRANSLATION_SYSTEM_PROMPT).length + CHAT_MESSAGE_OVERHEAD;
+	const trimmedInstruction = params.instructions?.trim();
 
 	if (isImage && params.image) {
-		const promptBody = `Extract and translate all readable text from the image from ${params.sourceLang === 'auto' ? 'auto-detect' : params.sourceLang} to ${params.targetLang}. Only output the translated text.`;
+		const promptBody = buildImageTranslationInstruction(params.sourceLang, params.targetLang, trimmedInstruction);
 		const promptTokens = encoder.encode(promptBody).length + CHAT_MESSAGE_OVERHEAD;
 		const sourceTokens = estimateImageTokens(params.model, params.image.width, params.image.height, params.image.detail ?? 'high');
 		const estimatedResponseTokens = MIN_RESPONSE_TOKENS + RESPONSE_OVERHEAD; // 图像输出长度与图中文字相关，这里取保守常量
@@ -96,7 +98,7 @@ export async function estimateTranslationTokenUsage(params: {
 		return { systemTokens: 0, promptTokens: 0, sourceTokens: 0, estimatedResponseTokens: 0, totalTokens: 0 };
 	}
 
-	const promptBody = buildTranslationPrompt(trimmed, params.sourceLang, params.targetLang);
+	const promptBody = buildTranslationPrompt(trimmed, params.sourceLang, params.targetLang, trimmedInstruction);
 	const promptTokens = encoder.encode(promptBody).length + CHAT_MESSAGE_OVERHEAD;
 	const sourceTokens = encoder.encode(trimmed).length;
 	const estimatedResponseTokens = Math.max(

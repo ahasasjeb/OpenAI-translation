@@ -27,6 +27,7 @@ interface TranslatePayload {
 	reasoningEffort?: string;
 	imageDataUrl?: string; // data:image/...;base64,xxxx 仅支持单张
 	imageDetail?: "low" | "high" | "auto";
+	instructions?: string;
 }
 
 const BASE_REASONING_EFFORTS = ["low", "medium", "high"] as const;
@@ -126,7 +127,10 @@ export async function POST(request: Request) {
 	const sourceLang = payload.sourceLang || "auto";
 	const targetLang = payload.targetLang || "zh";
 	const isImageRequest = hasImage;
-	const prompt = hasText ? buildTranslationPrompt(text, sourceLang, targetLang) : buildImageTranslationInstruction(sourceLang, targetLang);
+	const customInstruction = (typeof payload.instructions === "string" ? payload.instructions.trim() : "") || undefined;
+	const prompt = hasText
+		? buildTranslationPrompt(text, sourceLang, targetLang, customInstruction)
+		: buildImageTranslationInstruction(sourceLang, targetLang, customInstruction);
 
 	let responseStream: Awaited<ReturnType<ReturnType<typeof getOpenAIClient>["responses"]["stream"]>>;
 	try {

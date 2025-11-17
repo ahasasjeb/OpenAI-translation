@@ -98,6 +98,9 @@ export default function Home() {
   const translationOutputRef = useRef<HTMLTextAreaElement | null>(null);
   const trimmedSourceText = useMemo(() => sourceText.trim(), [sourceText]);
   const [debouncedSourceText, setDebouncedSourceText] = useState(trimmedSourceText);
+  const [customInstruction, setCustomInstruction] = useState("");
+  const trimmedInstruction = useMemo(() => customInstruction.trim(), [customInstruction]);
+  const [debouncedInstruction, setDebouncedInstruction] = useState(trimmedInstruction);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const isImageMode = !!imageDataUrl && !!imageInfo;
 
@@ -169,6 +172,16 @@ export default function Home() {
   }, [trimmedSourceText]);
 
   useEffect(() => {
+    const handler = window.setTimeout(() => {
+      setDebouncedInstruction(trimmedInstruction);
+    }, 300);
+
+    return () => {
+      window.clearTimeout(handler);
+    };
+  }, [trimmedInstruction]);
+
+  useEffect(() => {
     if (availableReasoningEfforts.length === 0) {
       if (reasoningEffort !== "low") {
         setReasoningEffort("low");
@@ -200,6 +213,7 @@ export default function Home() {
         model,
         sourceLang,
         targetLang,
+        instructions: debouncedInstruction,
       })
         .then((result) => {
           if (!active) return;
@@ -232,6 +246,7 @@ export default function Home() {
       model,
       sourceLang,
       targetLang,
+      instructions: debouncedInstruction,
     })
       .then((result) => {
         if (!active) return;
@@ -242,7 +257,8 @@ export default function Home() {
         if (!active) return;
         console.error("Token estimation failed", err);
         setTokenEstimateError("Token 预估失败，已使用字符数近似估算");
-        setEstimatedTokens(fallbackCharacterEstimate(debouncedSourceText));
+        const fallbackBasis = [debouncedSourceText, debouncedInstruction].filter(Boolean).join("\n");
+        setEstimatedTokens(fallbackCharacterEstimate(fallbackBasis));
       })
       .finally(() => {
         if (!active) return;
@@ -252,7 +268,7 @@ export default function Home() {
     return () => {
       active = false;
     };
-  }, [debouncedSourceText, isImageMode, imageInfo, model, sourceLang, targetLang]);
+  }, [debouncedSourceText, debouncedInstruction, isImageMode, imageInfo, model, sourceLang, targetLang]);
 
   useEffect(() => {
     const ref = copyResetTimerRef;
@@ -363,6 +379,10 @@ export default function Home() {
 
       if (effectiveReasoningEffort) {
         requestPayload.reasoningEffort = effectiveReasoningEffort;
+      }
+
+      if (trimmedInstruction) {
+        requestPayload.instructions = trimmedInstruction;
       }
 
       const response = await fetch("/api/translate", {
@@ -561,11 +581,13 @@ export default function Home() {
     } finally {
       setIsLoading(false);
     }
-  }, [effectiveReasoningEffort, estimatedOverLimit, imageDataUrl, isEstimatingTokens, isImageMode, model, sourceLang, sourceText, targetLang, trimmedSourceText]);
+  }, [effectiveReasoningEffort, estimatedOverLimit, imageDataUrl, isEstimatingTokens, isImageMode, model, sourceLang, sourceText, targetLang, trimmedSourceText, trimmedInstruction]);
 
   const handleClear = useCallback(() => {
     setSourceText("");
     setTargetText("");
+    setCustomInstruction("");
+    setDebouncedInstruction("");
     setImageDataUrl(null);
     setImageInfo(null);
     setError(null);
@@ -814,6 +836,19 @@ export default function Home() {
               >
                 {translateButtonLabel}
               </button>
+            </div>
+            <div className="mt-4 space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-gray-700 dark:text-gray-300">自定义指令（可选）</span>
+                <span className="text-xs text-gray-500 dark:text-gray-400">会注入提示词并参与 Token 估算</span>
+              </div>
+              <textarea
+                value={customInstruction}
+                onChange={(event) => setCustomInstruction(event.target.value)}
+                placeholder="例如：使用更口语化的语气、保留特定术语不翻译等..."
+                className="min-h-[96px] w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-3 text-sm shadow-sm focus:border-blue-500 dark:focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-200 dark:focus:ring-blue-800 text-gray-900 dark:text-gray-100"
+              />
+              <p className="text-xs text-gray-500 dark:text-gray-400">模型会警惕提示词注入，若这些指令试图覆盖系统要求将被忽略。</p>
             </div>
           </div>
           <div className="hidden w-px bg-gray-200 dark:bg-gray-700 sm:block" />
