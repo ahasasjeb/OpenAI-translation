@@ -172,7 +172,7 @@ export default function Home() {
     let active = true;
     setIsEstimatingTokens(true);
     setTokenEstimateError(null);
-    const params: Record<string, unknown> = {
+    const params: Parameters<typeof estimateTranslationTokenUsage>[0] = {
       model,
       sourceLang,
       targetLang,
@@ -183,7 +183,7 @@ export default function Home() {
     } else if (hasText) {
       params.text = debouncedSourceText;
     }
-    estimateTranslationTokenUsage(params as any)
+    estimateTranslationTokenUsage(params)
       .then((result) => {
         if (!active) return;
         setEstimatedTokens(result.totalTokens);
@@ -192,7 +192,7 @@ export default function Home() {
       .catch((err) => {
         if (!active) return;
         console.error("Token estimation failed", err);
-        if ((params as any).text) {
+        if (params.text) {
           setTokenEstimateError("Token 预估失败，已使用字符数近似估算");
           const fallbackBasis = [debouncedSourceText, debouncedInstruction].filter(Boolean).join("\n");
           setEstimatedTokens(fallbackCharacterEstimate(fallbackBasis));
